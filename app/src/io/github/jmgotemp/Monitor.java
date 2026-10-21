@@ -1,0 +1,460 @@
+package io.github.jmgotemp;
+
+import android.app.ActivityManager;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.os.Build;
+import android.os.Environment;
+import android.os.IBinder;
+import android.os.Parcel;
+import android.os.StatFs;
+import android.os.SystemClock;
+import android.view.Display;
+import android.view.WindowManager;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.FileReader;
+import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+/**
+ * Только чтение. Данные берутся у системного сервиса JMGO (jmgomiddle-01 -> DLP manager),
+ * того же, к которому обращаются штатные настройки и «Клон настроек».
+ */
+public final class Monitor {
+    private static final String SYS = "com.jmgo.middleware.service.IJmGOSystemService";
+    private static final String DLP = "com.jmgo.middleware.dlp.IJmGODlpManagerService";
+    private static final int T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
+    private static final int IDX_TEMPS = 0x105, IDX_FAN_DUTY = 0xa7, IDX_FAN_STATUS = 0x76,
+            IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334;
+
+    private static Monitor instance;
+
+    public static synchronized Monitor get(Context c) {
+        if (instance == null) instance = new Monitor(c.getApplicationContext());
+        return instance;
+    }
+
+    public interface Listener { void onUpdate(JSONObject latest); }
+
+    private final Context ctx;
+    private final ArrayDeque<JSONObject> history = new ArrayDeque<>();
+    private final List<Listener> listeners = new ArrayList<>();
+    private volatile JSONObject latest = new JSONObject();
+    private IBinder dlp;
+    private IBinder src;
+    private JSONObject limits;
+    private Thread thread;
+    private int users;
+    private long lastHistory;
+    private final long sessionStart = System.currentTimeMillis() / 1000;
+    private Double maxDmd, maxLaser; private Integer maxCpu;
+
+    private Monitor(Context c) { ctx = c; }
+
+    public synchronized void addListener(Listener l) { listeners.add(l); }
+    public synchronized void removeListener(Listener l) { listeners.remove(l); }
+
+    public synchronized void acquire() {
+        users++;
+        if (thread == null) {
+            thread = new Thread(this::loop, "jmgo-monitor");
+            thread.setDaemon(true);
+            thread.start();
+        }
+    }
+
+    public synchronized void release() {
+        users = Math.max(0, users - 1);
+        if (users == 0 && thread != null) { thread.interrupt(); thread = null; }
+    }
+
+    private void loop() {
+        while (!Thread.currentThread().isInterrupted()) {
+            JSONObject snap;
+            try { snap = snapshot(); } catch (Throwable t) {
+                dlp = null;
+                snap = new JSONObject();
+                try { snap.put("error", "Нет связи с сервисом JMGO: " + t); snap.put("ts", now()); } catch (Exception ignored) {}
+            }
+            latest = snap;
+            List<Listener> ls;
+            synchronized (this) {
+                if (!snap.has("error") && System.currentTimeMillis() - lastHistory >= 5000) {
+                    lastHistory = System.currentTimeMillis();
+                    try {
+                        JSONObject h = new JSONObject();
+                        JSONObject th = snap.getJSONObject("thermal");
+                        h.put("ts", snap.get("ts"));
+                        h.put("temp", snap.opt("temp"));
+                        h.put("fan1", snap.opt("fan1"));
+                        h.put("fan2", snap.opt("fan2"));
+                        h.put("dmd", th.opt("dmd"));
+                        h.put("l", th.opt("lasers"));
+                        history.addLast(h);
+                        while (history.size() > 720) history.removeFirst();
+                    } catch (Exception ignored) {}
+                }
+                ls = new ArrayList<>(listeners);
+            }
+            for (Listener l : ls) { try { l.onUpdate(snap); } catch (Throwable ignored) {} }
+            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+        }
+    }
+
+    public JSONObject latest() { return latest; }
+
+    public synchronized String apiJson() {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("latest", latest);
+            JSONArray a = new JSONArray();
+            for (JSONObject h : history) a.put(h);
+            o.put("history", a);
+            return o.toString();
+        } catch (Exception e) { return "{\"latest\":{\"error\":\"" + e + "\"},\"history\":[]}"; }
+    }
+
+    // ------------------------------------------------------------------ binder
+
+    private IBinder dlp() throws Exception {
+        if (dlp != null && dlp.isBinderAlive()) return dlp;
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        Method gs = sm.getDeclaredMethod("getService", String.class);
+        IBinder sys = (IBinder) gs.invoke(null, "jmgomiddle-01");
+        if (sys == null) throw new IllegalStateException("сервис jmgomiddle-01 не найден (это не JMGO?)");
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(SYS);
+            sys.transact(5, d, r, 0);
+            r.readException();
+            dlp = r.readStrongBinder();
+        } finally { d.recycle(); r.recycle(); }
+        if (dlp == null) throw new IllegalStateException("DLP-сервис недоступен");
+        return dlp;
+    }
+
+    // ------------------------------------------------------------------ HDMI-вход (сигнал источника)
+
+    private static final String SRC = "com.jmgo.middleware.tv.IJmGOTvInputSrcService";
+
+    private IBinder src() throws Exception {
+        if (src != null && src.isBinderAlive()) return src;
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        IBinder sys = (IBinder) sm.getDeclaredMethod("getService", String.class).invoke(null, "jmgomiddle-01");
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(SYS);
+            sys.transact(3, d, r, 0); // getTvInputSrcService
+            r.readException();
+            src = r.readStrongBinder();
+        } finally { d.recycle(); r.recycle(); }
+        return src;
+    }
+
+    /** code 1 = getIptsRslt (String), 7 = getIptsFrameRate, 15 = isSignalLocked, 14 = getVrrMode */
+    private Object srcCall(int code, boolean str) {
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            IBinder b = src();
+            if (b == null) return null;
+            d.writeInterfaceToken(SRC);
+            b.transact(code, d, r, 0); r.readException();
+            return str ? r.readString() : (Object) r.readInt();
+        } catch (Exception e) { return null; } finally { d.recycle(); r.recycle(); }
+    }
+
+    private String getString(int idx) throws Exception {
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(DLP); d.writeInt(idx);
+            dlp().transact(T_GET_STRING, d, r, 0); r.readException();
+            return r.readString();
+        } finally { d.recycle(); r.recycle(); }
+    }
+
+    private int[] getArray(int idx) throws Exception {
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(DLP); d.writeInt(idx);
+            dlp().transact(T_GET_ARRAY, d, r, 0); r.readException();
+            return r.createIntArray();
+        } finally { d.recycle(); r.recycle(); }
+    }
+
+    private Integer getInt(int idx) {
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(DLP); d.writeInt(idx);
+            dlp().transact(T_GET, d, r, 0); r.readException();
+            return r.readInt();
+        } catch (Exception e) { return null; } finally { d.recycle(); r.recycle(); }
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    private static long now() { return System.currentTimeMillis() / 1000; }
+
+    private static String readFile(String path) {
+        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
+            String s = br.readLine();
+            return s == null ? null : s.trim();
+        } catch (Exception e) { return null; }
+    }
+
+    private static Integer readInt(String path) {
+        String s = readFile(path);
+        if (s == null) return null;
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    private static Double num(String s) {
+        try {
+            double v = Double.parseDouble(s);
+            if (v <= -100 || v > 200) return null;
+            return Math.round(v * 10) / 10.0;
+        } catch (Exception e) { return null; }
+    }
+
+    private static String model() {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            String m = (String) sp.getMethod("get", String.class).invoke(null, "ro.boot.jmgo.model");
+            if (m != null && !m.isEmpty()) return m;
+        } catch (Throwable ignored) {}
+        return Build.MODEL;
+    }
+
+    private static String prop(String key) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            return (String) sp.getMethod("get", String.class).invoke(null, key);
+        } catch (Throwable e) { return ""; }
+    }
+
+    // ------------------------------------------------------------------ пороги из прошивки
+
+    private JSONObject limits() {
+        if (limits != null) return limits;
+        JSONObject l = new JSONObject();
+        try {
+            l.put("dmd_shutdown", 55.0); l.put("laser_derate", 56.5); l.put("laser_shutdown", 57.0);
+            l.put("pid_targets", new JSONArray().put(40.0).put(46.0).put(51.0));
+            l.put("interp_r", new JSONArray(new int[]{360, 420, 480, 540, 600, 660, 720, 790, 870, 1023}));
+            l.put("value_max", new JSONArray(new int[]{1023, 1023, 1023}));
+            l.put("from_firmware", false);
+            String xml = readHippoConfig();
+            if (xml != null) {
+                List<double[]> check = rows(xml, "SYSTEM_CHECK_TEMPERATURE_CONFIG");
+                Double ls = null, ld = null;
+                for (double[] r : check) {
+                    if (r.length < 2) continue;
+                    int idx = (int) r[0];
+                    if (idx == 7) l.put("dmd_shutdown", r[1]);
+                    else if (idx == 10 || idx == 11 || idx == 12 || idx == 14) {
+                        ls = ls == null ? r[1] : Math.min(ls, r[1]);
+                        if (r.length > 2 && r[2] > 0) ld = ld == null ? r[2] : Math.min(ld, r[2]);
+                    }
+                }
+                if (ls != null) l.put("laser_shutdown", ls);
+                if (ld != null) l.put("laser_derate", ld);
+                List<double[]> pid = rows(xml, "FAN_PID_CONTROL_CONFIG");
+                if (!pid.isEmpty()) {
+                    JSONArray p = new JSONArray();
+                    for (double[] r : pid) if (r.length > 0) p.put(r[0]);
+                    l.put("pid_targets", p);
+                }
+                List<double[]> interp = rows(xml, "DISPLAY_BRIGHTNESS_INTERPOLATOR");
+                if (!interp.isEmpty() && interp.get(0).length >= 2) {
+                    JSONArray a = new JSONArray();
+                    for (double v : interp.get(0)) a.put((int) v);
+                    l.put("interp_r", a);
+                }
+                Matcher m = Pattern.compile("key=\"BRIGHTNESS_VALUE_MAX\"\\s+value=\"([^\"]*)\"").matcher(xml);
+                if (m.find()) {
+                    String[] p = m.group(1).split(",");
+                    JSONArray a = new JSONArray();
+                    for (int i = 0; i < Math.min(3, p.length); i++) a.put(Integer.parseInt(p[i].trim()));
+                    l.put("value_max", a);
+                }
+                l.put("from_firmware", true);
+            }
+        } catch (Exception ignored) {}
+        limits = l;
+        return l;
+    }
+
+    private String readHippoConfig() {
+        try {
+            ApplicationInfo ai = ctx.getPackageManager().getApplicationInfo("com.jmgo.hippo", 0);
+            try (ZipFile z = new ZipFile(ai.sourceDir)) {
+                ZipEntry e = z.getEntry("assets/" + model() + "/hippo_configs.xml");
+                if (e == null) return null;
+                try (InputStream in = z.getInputStream(e)) {
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192]; int n;
+                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                    return bo.toString("UTF-8");
+                }
+            }
+        } catch (Exception e) { return null; }
+    }
+
+    private static List<double[]> rows(String xml, String key) {
+        List<double[]> out = new ArrayList<>();
+        Matcher m = Pattern.compile("key=\"" + key + "\"[^>]*>(.*?)</setting-2-dimen-array>", Pattern.DOTALL).matcher(xml);
+        if (!m.find()) return out;
+        Matcher it = Pattern.compile("<item>(.*?)</item>", Pattern.DOTALL).matcher(m.group(1));
+        Pattern numP = Pattern.compile("-?\\d+(?:\\.\\d+)?");
+        while (it.find()) {
+            Matcher n = numP.matcher(it.group(1));
+            List<Double> v = new ArrayList<>();
+            while (n.find()) v.add(Double.parseDouble(n.group()));
+            double[] a = new double[v.size()];
+            for (int i = 0; i < a.length; i++) a[i] = v.get(i);
+            if (a.length > 0) out.add(a);
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ снимок
+
+    private JSONObject snapshot() throws Exception {
+        JSONObject s = new JSONObject();
+        JSONObject lim = limits();
+        String model = model();
+        s.put("ts", now());
+        s.put("model", model);
+        s.put("name", "K981CN".equals(model) ? "JMGO N5 Pro" : "KD11CN".equals(model) ? "JMGO N5S Ultra Max" : "JMGO " + model);
+        s.put("chip", "MediaTek " + Build.HARDWARE.toUpperCase(Locale.ROOT));
+        s.put("firmware_version", Build.VERSION.INCREMENTAL);
+        String dlpv = readFile("/sys/class/jmgo_dlp/version");
+        if (dlpv != null) s.put("dlp_version", dlpv);
+        s.put("dlp_model", prop("vendor.jmgo.dlp.model"));
+        s.put("uptime", SystemClock.elapsedRealtime() / 1000);
+
+        // температуры DMD и лазеров
+        JSONObject t = new JSONObject(getString(IDX_TEMPS));
+        TreeMap<Integer, Double> lasers = new TreeMap<>();
+        Double dmd = null;
+        Iterator<String> keys = t.keys();
+        Pattern lp = Pattern.compile("laser(\\d+)_temperatures");
+        while (keys.hasNext()) {
+            String k = keys.next();
+            Matcher m = lp.matcher(k);
+            if (m.matches()) { Double v = num(t.optString(k)); if (v != null) lasers.put(Integer.parseInt(m.group(1)), v); }
+            else if (k.equals("dmd_temperatures")) dmd = num(t.optString(k));
+        }
+        JSONObject th = new JSONObject();
+        JSONArray la = new JSONArray();
+        Double lmax = null;
+        for (Double v : lasers.values()) { la.put(v); lmax = lmax == null ? v : Math.max(lmax, v); }
+        th.put("fresh", true); th.put("age", 0);
+        th.put("dmd", dmd == null ? JSONObject.NULL : dmd);
+        th.put("lasers", la);
+        th.put("laser_max", lmax == null ? JSONObject.NULL : lmax);
+        int[] duty = getArray(IDX_FAN_DUTY);
+        if (duty != null) { JSONArray d = new JSONArray(); for (int v : duty) d.put(v); th.put("fan_duty", d); }
+        Integer fanMode = getInt(IDX_FAN_MODE);
+        th.put("fan_mode", fanMode != null && fanMode == 0 ? "PID" : "manual");
+        Integer ov = getInt(IDX_OVERLAP_LEVEL);
+        th.put("overlap_level", ov == null ? 0 : ov);
+        Integer fs = getInt(IDX_FAN_STATUS);
+        if (fs != null) th.put("fan_status", fs);
+        s.put("thermal", th);
+        s.put("limits", lim);
+
+        // обороты вентиляторов (если прошивка даёт приложению читать файл)
+        String tach = readFile("/sys/class/jmgo_fan/tachometer");
+        if (tach != null) {
+            String[] p = tach.trim().split("\\s+");
+            try { if (p.length > 0) s.put("fan1", Integer.parseInt(p[0])); if (p.length > 1) s.put("fan2", Integer.parseInt(p[1])); } catch (Exception ignored) {}
+        }
+
+        // яркость и ток лазеров
+        String br = readFile("/sys/class/jmgo_dlp/brightness");
+        Matcher bm = br == null ? null : Pattern.compile("R(\\d+)G(\\d+)B(\\d+)").matcher(br);
+        if (bm != null && bm.find()) {
+            int[] cur = {Integer.parseInt(bm.group(1)), Integer.parseInt(bm.group(2)), Integer.parseInt(bm.group(3))};
+            JSONArray vmax = lim.optJSONArray("value_max");
+            JSONArray pct = new JSONArray();
+            for (int i = 0; i < 3; i++) {
+                int mx = vmax != null && vmax.length() > i ? vmax.optInt(i, 1023) : 1023;
+                pct.put(Math.round(cur[i] * 100f / (mx == 0 ? 1023 : mx)));
+            }
+            s.put("laser_current_pct", pct);
+            JSONArray interp = lim.optJSONArray("interp_r");
+            if (interp != null && interp.length() > 0) {
+                int best = 0; boolean exact = false;
+                for (int i = 0; i < interp.length(); i++) {
+                    if (interp.optInt(i) == cur[0]) { best = i; exact = true; break; }
+                    if (Math.abs(interp.optInt(i) - cur[0]) < Math.abs(interp.optInt(best) - cur[0])) best = i;
+                }
+                s.put("brightness_menu", best + 1);
+                s.put("brightness_exact", exact);
+            }
+        } else {
+            Integer b = getInt(IDX_BRIGHTNESS);
+            if (b != null && b >= 0) { s.put("brightness_menu", Math.max(1, Math.min(10, (b + 5) / 10))); s.put("brightness_exact", false); }
+        }
+
+        // процессор
+        Integer cpu = readInt("/sys/class/thermal/thermal_zone0/temp");
+        if (cpu != null) s.put("temp", cpu / 1000);
+        Integer trip = readInt("/sys/class/thermal/thermal_zone0/trip_point_0_temp");
+        s.put("trip_passive0", trip != null ? trip / 1000 : 123);
+        Integer freq = readInt("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+        if (freq != null) s.put("freq", freq / 1000);
+        s.put("cpu_usage", -1);
+
+        // память, накопитель, вывод
+        ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        s.put("mem_total", mi.totalMem / 1024); s.put("mem_avail", mi.availMem / 1024);
+        StatFs st = new StatFs(Environment.getDataDirectory().getPath());
+        s.put("storage_free_kb", st.getAvailableBytes() / 1024);
+        try {
+            Display disp = ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+            Display.Mode mode = disp.getMode();
+            s.put("output_width", mode.getPhysicalWidth()); s.put("output_height", mode.getPhysicalHeight());
+            s.put("output_hz", Math.round(mode.getRefreshRate()));
+        } catch (Throwable ignored) {}
+
+        // сигнал на HDMI (если сейчас выбран HDMI-вход и есть сигнал)
+        Object locked = srcCall(15, false);
+        if (locked instanceof Integer && (Integer) locked != 0) {
+            Object rs = srcCall(1, true);
+            Object fps = srcCall(7, false);
+            Object vrr = srcCall(14, false);
+            if (rs != null) s.put("input_rslt", rs.toString().trim());
+            if (fps instanceof Integer && (Integer) fps > 0) s.put("input_fps", fps);
+            if (vrr instanceof Integer) s.put("input_vrr", vrr);
+        }
+        if (dmd != null && (maxDmd == null || dmd > maxDmd)) maxDmd = dmd;
+        if (lmax != null && (maxLaser == null || lmax > maxLaser)) maxLaser = lmax;
+        if (cpu != null && (maxCpu == null || cpu / 1000 > maxCpu)) maxCpu = cpu / 1000;
+        JSONObject mx = new JSONObject();
+        if (maxDmd != null) mx.put("dmd", maxDmd);
+        if (maxLaser != null) mx.put("laser", maxLaser);
+        if (maxCpu != null) mx.put("cpu", maxCpu);
+        s.put("session_max", mx);
+        s.put("session_start", sessionStart);
+        s.put("extra_zones", new JSONArray());
+        return s;
+    }
+}
