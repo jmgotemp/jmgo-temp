@@ -62,6 +62,11 @@ public class MainActivity extends Activity {
     final class Bridge {
         @JavascriptInterface public String api() { return monitor.apiJson(); }
 
+        @JavascriptInterface public String appVersion() {
+            try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+            catch (Exception e) { return ""; }
+        }
+
         @JavascriptInterface public boolean canOverlay() { return Settings.canDrawOverlays(MainActivity.this); }
 
         @JavascriptInterface public boolean overlayOn() { return OverlayService.running; }

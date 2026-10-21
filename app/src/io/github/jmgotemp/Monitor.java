@@ -258,6 +258,7 @@ public final class Monitor {
             l.put("value_max", new JSONArray(new int[]{1023, 1023, 1023}));
             l.put("from_firmware", false);
             String xml = readHippoConfig();
+            if (xml != null) xml = xml.replaceAll("(?s)<!--.*?-->", "");
             if (xml != null) {
                 List<double[]> check = rows(xml, "SYSTEM_CHECK_TEMPERATURE_CONFIG");
                 Double ls = null, ld = null;
@@ -274,10 +275,13 @@ public final class Monitor {
                 if (ld != null) l.put("laser_derate", ld);
                 List<double[]> pid = rows(xml, "FAN_PID_CONTROL_CONFIG");
                 if (!pid.isEmpty()) {
-                    JSONArray p = new JSONArray();
-                    for (double[] r : pid) if (r.length > 0) p.put(r[0]);
+                    JSONArray p = new JSONArray(), fx = new JSONArray();
+                    for (double[] r : pid) if (r.length > 0) { p.put(r[0]); fx.put(r.length > 2 && r[1] >= r[2]); }
                     l.put("pid_targets", p);
+                    l.put("pid_fixed", fx);
                 }
+                dmdMux = list(xml, "TEMPERATURE_DMD_CHANNEL_MUX");
+                dmdDlpCfg = list(xml, "DMD_TEMPERATURE_CHECK_CONFIG");
                 List<double[]> interp = rows(xml, "DISPLAY_BRIGHTNESS_INTERPOLATOR");
                 if (!interp.isEmpty() && interp.get(0).length >= 2) {
                     JSONArray a = new JSONArray();
@@ -312,6 +316,40 @@ public final class Monitor {
                 }
             }
         } catch (Exception e) { return null; }
+    }
+
+    private double[] dmdMux = new double[0], dmdDlpCfg = new double[0];
+
+    private static double[] list(String xml, String key) {
+        Matcher m = Pattern.compile("key=\"" + key + "\"\\s+value=\"([^\"]*)\"").matcher(xml);
+        if (!m.find()) return new double[0];
+        Matcher n = Pattern.compile("-?\\d+(?:\\.\\d+)?").matcher(m.group(1));
+        List<Double> v = new ArrayList<>();
+        while (n.find()) v.add(Double.parseDouble(n.group()));
+        double[] a = new double[v.size()];
+        for (int i = 0; i < a.length; i++) a[i] = v.get(i);
+        return a;
+    }
+
+    /** '6.0.0' -> 600, как в прошивке. */
+    private static int dlpVersionInt(String v) {
+        if (v == null) return 0;
+        Matcher m = Pattern.compile("\\d+").matcher(v);
+        int[] k = {100, 10, 1}; int r = 0, i = 0;
+        while (m.find() && i < 3) r += Integer.parseInt(m.group()) * k[i++];
+        return r;
+    }
+
+    /** Повторяет TemperaturePolicy.isDmdTemperatureByDlp() из hippo. */
+    private boolean dmdByDlp(String dlpVersion) {
+        double[] x = dmdMux;
+        if (x.length == 0 || x[0] < 0) return false;
+        if (x.length >= 7 && x[6] > 0) {
+            int ver = dlpVersionInt(dlpVersion);
+            if (ver >= x[6]) return true;
+            if (ver > 0) return false;
+        }
+        return x.length >= 6 && x[5] == 1;
     }
 
     private static List<double[]> rows(String xml, String key) {
@@ -376,7 +414,14 @@ public final class Monitor {
         Integer fs = getInt(IDX_FAN_STATUS);
         if (fs != null) th.put("fan_status", fs);
         s.put("thermal", th);
-        s.put("limits", lim);
+        JSONObject limOut = new JSONObject(lim.toString());
+        limOut.put("dmd_source", "ntc");
+        if (dmdDlpCfg.length > 0 && dmdDlpCfg[0] > 0 && dmdByDlp(dlpv)) {
+            limOut.put("dmd_shutdown", dmdDlpCfg[0]);
+            limOut.put("dmd_source", "dlp");
+        }
+        s.put("limits", limOut);
+        lim = limOut;
 
         // обороты вентиляторов (если прошивка даёт приложению читать файл)
         String tach = readFile("/sys/class/jmgo_fan/tachometer");

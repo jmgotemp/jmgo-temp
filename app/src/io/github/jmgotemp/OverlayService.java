@@ -33,6 +33,12 @@ import java.util.regex.Pattern;
  * Строка 1: DMD и самый горячий лазер (цвет = запас до порога защиты).
  * Строка 2: мощность вентиляторов и уровень яркости.
  */
+final class BuildInfo {
+    static String version(android.content.Context c) {
+        try { return c.getPackageManager().getPackageInfo(c.getPackageName(), 0).versionName; } catch (Exception e) { return "?"; }
+    }
+}
+
 public class OverlayService extends Service implements Monitor.Listener {
     static volatile boolean running;
     private static volatile boolean hidden;
@@ -56,7 +62,7 @@ public class OverlayService extends Service implements Monitor.Listener {
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("overlay", "Окно температур", NotificationManager.IMPORTANCE_MIN));
         Notification n = new Notification.Builder(this, "overlay")
-                .setContentTitle("JMGO Temp").setContentText("Окно температур включено")
+                .setContentTitle("JMGO Temp").setContentText("Окно температур включено · v" + BuildInfo.version(this))
                 .setSmallIcon(android.R.drawable.stat_sys_warning).build();
         startForeground(1, n);
         if (!Settings.canDrawOverlays(this)) { stopSelf(); return; }

@@ -66,7 +66,7 @@ main{max-width:none}
   <div class="metric"><div class="label">Вывод изображения</div><div class="value" id="output">—</div><div class="hint" id="outputHint">Разрешение · частота</div></div>
   <div class="metric"><div class="label">Накопитель</div><div class="value" id="storage">—</div><div class="hint">свободно</div></div>
   <div class="metric"><div class="label">Максимум за сеанс</div><div class="zone-line"><span>DMD</span><b id="maxDmd">—</b></div><div class="zone-line"><span>Лазеры</span><b id="maxLaser">—</b></div><div class="zone-line"><span>Процессор</span><b id="maxCpu">—</b></div><div class="hint" id="maxSince" style="display:none">—</div></div>
-  <div class="metric" id="dlpCard"><div class="label">Версии</div><div class="version-line"><span>Прошивка</span><b id="firmwareVersion">—</b></div><div class="version-line"><span>DLP</span><b id="dlpVersion">—</b></div><div class="version-line"><span>Модель</span><b id="modelCode">—</b></div></div>
+  <div class="metric" id="dlpCard"><div class="label">Версии</div><div class="version-line"><span>JMGO Temp</span><b id="appVersion">—</b></div><div class="version-line"><span>Прошивка</span><b id="firmwareVersion">—</b></div><div class="version-line"><span>DLP</span><b id="dlpVersion">—</b></div><div class="version-line"><span>Модель</span><b id="modelCode">—</b></div></div>
   <div class="metric ultra-extra" id="extraZoneCard"><div class="label">Доп. датчики</div><div class="zone-line"><span>GPU</span><b id="gpuTemp">—</b></div><div class="zone-line"><span>APU</span><b id="apuTemp">—</b></div></div>
 </section>
 <section class="prot"><div class="protection" id="protection"></div><div class="note" id="protNote"></div></section>
@@ -113,7 +113,7 @@ function drawThermal(points,lim){
   if(points.length<2||!hasData){x.fillStyle='#a3aab6';x.fillText(points.length<2?'Собираю историю…':'Нет данных от hippo_server (см. подсказку выше)',18*dpr,38*dpr);return}
   const L=46*dpr,R=150*dpr,T=12*dpr,B=20*dpr,pw=W-L-R,ph=H-T-B;
   let vals=[];points.forEach(p=>{if(p.dmd!=null)vals.push(p.dmd);(p.l||[]).forEach(v=>vals.push(v))});
-  const top=Math.max(lim.laser_shutdown||57,...vals)+3, bot=Math.max(0,Math.floor((Math.min(...vals)-5)/5)*5);
+  const top=Math.max(lim.laser_shutdown||57,lim.dmd_shutdown||55,...vals)+3, bot=Math.max(0,Math.floor((Math.min(...vals)-5)/5)*5);
   const Y=v=>T+(1-(v-bot)/(top-bot))*ph;
   x.strokeStyle='#303641';x.fillStyle='#a3aab6';x.lineWidth=1*dpr;
   for(let tv=Math.ceil(bot/10)*10;tv<=top;tv+=10){const y=Y(tv);x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.textAlign='right';x.fillText(tv,L-8*dpr,y+4*dpr)}
@@ -140,9 +140,9 @@ function renderProtection(d){
   t.push(`<div class="threshold critical"><b>${l.dmd_shutdown??'—'} °C</b><span>DMD — отключение проектора</span></div>`);
   t.push(`<div class="threshold hot"><b>${l.laser_derate??'—'} °C</b><span>Лазеры — снижение яркости</span></div>`);
   t.push(`<div class="threshold critical"><b>${l.laser_shutdown??'—'} °C</b><span>Лазеры — отключение</span></div>`);
-  const pt=l.pid_targets||[];t.push(`<div class="threshold info"><b>${pt.length?pt[0]+' °C':'—'}</b><span>Вентиляторы держат лазеры около этой температуры${pt.length>1?` (в ярких режимах — до ${pt[pt.length-1]} °C)`:''}</span></div>`);
+  const pt=(l.pid_targets||[]).filter((v,i)=>!(l.pid_fixed||[])[i]);t.push(`<div class="threshold info"><b>${pt.length?pt[0]+' °C':'—'}</b><span>Вентиляторы держат лазеры около этой температуры${pt.length>1?` (в ярких режимах — до ${pt[pt.length-1]} °C)`:''}</span></div>`);
   set('protection',t.join(''));
-  set('protNote',`${l.from_firmware?'Пороги — из прошивки этого проектора.':'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.'} Датчик DMD стоит рядом с матрицей, сами зеркала горячее. Чтобы следить за охлаждением, сфотографируйте экран после 30–60 мин фильма и сравните через несколько месяцев в тех же условиях: +5 °C и больше или заметно выше обороты — пора обслуживать.`);
+  set('protNote',`${l.from_firmware?'Пороги — из прошивки этого проектора.':'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.'} ${l.dmd_source==='dlp'?'Температуру DMD отдаёт контроллер DLP (датчик в самой матрице), поэтому и порог выше.':'Датчик DMD стоит рядом с матрицей, сами зеркала горячее.'} Чтобы следить за охлаждением, сфотографируйте экран после 30–60 мин фильма и сравните через несколько месяцев в тех же условиях: +5 °C и больше или заметно выше обороты — пора обслуживать.`);
 }
 function render(r){
   const d0=r.latest;
@@ -205,6 +205,7 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='ArrowUp'){window.scrollBy({top:-260,behavior:'smooth'});e.preventDefault()}
   else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[$('ovBtn'),$('cornerBtn')];let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
 });
+document.addEventListener('DOMContentLoaded',()=>{try{const v=Android.appVersion();if(v)$('appVersion').textContent=v}catch(e){}});
 let last=null;
 function tick(){try{last=JSON.parse(Android.api());render(last);updOverlayBtn()}catch(e){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>ошибка: '+esc(e)}}
 addEventListener('resize',()=>last&&render(last));tick();setInterval(tick,2000);
