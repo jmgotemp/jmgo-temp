@@ -62,7 +62,7 @@ public class OverlayService extends Service implements Monitor.Listener {
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("overlay", "Окно температур", NotificationManager.IMPORTANCE_MIN));
         Notification n = new Notification.Builder(this, "overlay")
-                .setContentTitle("JMGO Temp").setContentText("Окно температур включено · v" + BuildInfo.version(this))
+                .setContentTitle("JMGO Temp").setContentText("JMGO Temp v" + BuildInfo.version(this))
                 .setSmallIcon(android.R.drawable.stat_sys_warning).build();
         startForeground(1, n);
         if (!Settings.canDrawOverlays(this)) { stopSelf(); return; }
@@ -136,9 +136,16 @@ public class OverlayService extends Service implements Monitor.Listener {
         ui.post(() -> { if (view != null) view.setText(text); });
     }
 
+    private boolean ru() {
+        String l = getSharedPreferences("overlay", MODE_PRIVATE).getString("lang", "");
+        if (l.isEmpty()) l = Locale.getDefault().getLanguage();
+        return l.startsWith("ru");
+    }
+
     private CharSequence format(JSONObject d) {
+        boolean ru = ru();
         SpannableStringBuilder sb = new SpannableStringBuilder();
-        if (d.has("error")) { add(sb, "JMGO Temp: нет данных", 0xFFF16B68); return sb; }
+        if (d.has("error")) { add(sb, ru ? "JMGO Temp: нет данных" : "JMGO Temp: no data", 0xFFF16B68); return sb; }
         JSONObject th = d.optJSONObject("thermal");
         JSONObject lim = d.optJSONObject("limits");
         if (th == null || lim == null) { add(sb, "JMGO Temp…", Color.WHITE); return sb; }
@@ -147,43 +154,45 @@ public class OverlayService extends Service implements Monitor.Listener {
         int grey = 0xFFA3AAB6;
         add(sb, "DMD ", grey);
         add(sb, dmd == null ? "—" : String.format(Locale.US, "%.1f°", dmd), colorFor(dmd, lim.optDouble("dmd_shutdown", 55)));
-        add(sb, "  Лазер ", grey);
+        add(sb, ru ? "  Лазер " : "  Laser ", grey);
         add(sb, lm == null ? "—" : String.format(Locale.US, "%.1f°", lm), colorFor(lm, lim.optDouble("laser_derate", 56.5)));
+        // процессор: температура, при троттлинге — предупреждение (загрузка только на дашборде)
         if (d.has("temp")) {
             int cpu = d.optInt("temp");
             add(sb, "  CPU ", grey);
             add(sb, cpu + "°", cpu >= 100 ? 0xFFF16B68 : cpu >= 90 ? 0xFFF2BD55 : 0xFF7BE495);
+            if (d.optBoolean("throttled", false)) add(sb, (ru ? " ⚠ троттлинг " : " ⚠ throttling ") + d.optInt("freq_cap") + (ru ? " МГц" : " MHz"), 0xFFF16B68);
         }
         sb.append("\n");
-        // вентиляторы: обороты (их удобно сравнивать между аппаратами) и мощность в %
         JSONArray duty = th.optJSONArray("fan_duty");
         int fan = -1;
         if (duty != null) for (int i = 0; i < duty.length(); i++) fan = Math.max(fan, duty.optInt(i));
         int rpm = Math.max(d.optInt("fan1", -1), d.optInt("fan2", -1));
-        add(sb, "Вент ", grey);
-        add(sb, rpm > 0 ? rpm + " об/мин" : "—", Color.WHITE);
+        add(sb, ru ? "Вент " : "Fans ", grey);
+        add(sb, rpm > 0 ? rpm + (ru ? " об/мин" : " rpm") : "—", Color.WHITE);
         if (fan >= 0) add(sb, " (" + fan + "%)", grey);
-        if (d.has("brightness_menu")) {
-            add(sb, "  Яркость ", grey);
-            add(sb, (d.optBoolean("brightness_exact", true) ? "" : "≈") + d.optInt("brightness_menu") + "/10", Color.WHITE);
-        }
-        // разрешение: сигнал с HDMI, если он есть, иначе режим вывода проектора
+        int mode = d.optInt("brightness_mode", -1);
+        boolean fixed = mode == 15 || mode == 16 || mode == 22 || mode == 23;
+        add(sb, ru ? "  Яркость " : "  Brightness ", grey);
+        if (fixed) add(sb, ru ? "макс." : "max", Color.WHITE);
+        else if (d.has("brightness_pct")) add(sb, Math.round(d.optInt("brightness_pct") / 10f) + "/10", Color.WHITE);
+        else if (d.has("brightness_menu")) add(sb, "≈" + d.optInt("brightness_menu") + "/10", Color.WHITE);
+        else add(sb, "—", Color.WHITE);
         sb.append("\n");
         String rs = d.optString("input_rslt", "");
         if (!rs.isEmpty() && !"null".equals(rs)) {
             add(sb, "HDMI ", grey);
-            // прошивка отдаёт строку вида "3840x2160@59Hz" — приводим к одному виду
             Matcher m = Pattern.compile("(\\d+)\\s*[xX×]\\s*(\\d+)(?:[^@\\d]*)?(?:@\\s*([\\d.]+))?").matcher(rs);
             String txt;
             if (m.find()) {
                 String hz = m.group(3) != null ? m.group(3) : (d.has("input_fps") ? String.valueOf(d.optInt("input_fps")) : null);
-                txt = shortRes(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))) + (hz != null ? " " + roundHz(hz) + " Гц" : "");
+                txt = shortRes(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))) + (hz != null ? " " + roundHz(hz) + (ru ? " Гц" : " Hz") : "");
             } else txt = rs;
             add(sb, txt, Color.WHITE);
             if (d.optInt("input_vrr", 0) > 0) add(sb, " VRR", 0xFF72AAFF);
         } else if (d.has("output_width")) {
-            add(sb, "Вывод ", grey);
-            add(sb, shortRes(d.optInt("output_width"), d.optInt("output_height")) + " " + d.optInt("output_hz") + " Гц", Color.WHITE);
+            add(sb, ru ? "Вывод " : "Output ", grey);
+            add(sb, shortRes(d.optInt("output_width"), d.optInt("output_height")) + " " + d.optInt("output_hz") + (ru ? " Гц" : " Hz"), Color.WHITE);
         }
         return sb;
     }

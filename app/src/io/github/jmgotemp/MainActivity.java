@@ -67,6 +67,13 @@ public class MainActivity extends Activity {
             catch (Exception e) { return ""; }
         }
 
+        @JavascriptInterface public String getLang() { return prefs().getString("lang", ""); }
+
+        @JavascriptInterface public void setLang(String l) {
+            prefs().edit().putString("lang", l).apply();
+            if (OverlayService.running) startForegroundService(new Intent(MainActivity.this, OverlayService.class).setAction("reposition"));
+        }
+
         @JavascriptInterface public boolean canOverlay() { return Settings.canDrawOverlays(MainActivity.this); }
 
         @JavascriptInterface public boolean overlayOn() { return OverlayService.running; }

@@ -40,7 +40,8 @@ public final class Monitor {
     private static final String DLP = "com.jmgo.middleware.dlp.IJmGODlpManagerService";
     private static final int T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
     private static final int IDX_TEMPS = 0x105, IDX_FAN_DUTY = 0xa7, IDX_FAN_STATUS = 0x76,
-            IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334;
+            IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334,
+            IDX_BRIGHTNESS_MODE = 0x64;
 
     private static Monitor instance;
 
@@ -63,6 +64,9 @@ public final class Monitor {
     private long lastHistory;
     private final long sessionStart = System.currentTimeMillis() / 1000;
     private Double maxDmd, maxLaser; private Integer maxCpu;
+    private long[] prevCpu;
+    private Long throttleSince, throttleFirst;
+    private Integer lastFan1, lastFan2;
 
     private Monitor(Context c) { ctx = c; }
 
@@ -105,6 +109,9 @@ public final class Monitor {
                         h.put("fan2", snap.opt("fan2"));
                         h.put("dmd", th.opt("dmd"));
                         h.put("l", th.opt("lasers"));
+                        h.put("load", snap.opt("cpu_usage"));
+                        h.put("fpct", snap.opt("freq_pct"));
+                        h.put("thr", snap.optBoolean("throttled", false));
                         history.addLast(h);
                         while (history.size() > 720) history.removeFirst();
                     } catch (Exception ignored) {}
@@ -112,7 +119,7 @@ public final class Monitor {
                 ls = new ArrayList<>(listeners);
             }
             for (Listener l : ls) { try { l.onUpdate(snap); } catch (Throwable ignored) {} }
-            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+            try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
         }
     }
 
@@ -281,6 +288,8 @@ public final class Monitor {
                     l.put("pid_fixed", fx);
                 }
                 dmdMux = list(xml, "TEMPERATURE_DMD_CHANNEL_MUX");
+                modeCurrents.clear();
+                for (double[] r : rows(xml, "BRIGHTNESS_VALUE")) if (r.length >= 5 && r[0] > 0 && r[2] >= 0) modeCurrents.add(new int[]{(int) r[0], (int) r[2], (int) r[3], (int) r[4]});
                 dmdDlpCfg = list(xml, "DMD_TEMPERATURE_CHECK_CONFIG");
                 List<double[]> interp = rows(xml, "DISPLAY_BRIGHTNESS_INTERPOLATOR");
                 if (!interp.isEmpty() && interp.get(0).length >= 2) {
@@ -319,6 +328,7 @@ public final class Monitor {
     }
 
     private double[] dmdMux = new double[0], dmdDlpCfg = new double[0];
+    private final List<int[]> modeCurrents = new ArrayList<>();
 
     private static double[] list(String xml, String key) {
         Matcher m = Pattern.compile("key=\"" + key + "\"\\s+value=\"([^\"]*)\"").matcher(xml);
@@ -369,6 +379,23 @@ public final class Monitor {
         return out;
     }
 
+    /** Загрузка процессора по /proc/stat между двумя опросами; -1, если файл закрыт (SELinux). */
+    private int cpuUsage() {
+        String line = readFile("/proc/stat");
+        if (line == null || !line.startsWith("cpu ")) return -1;
+        String[] p = line.trim().split("\\s+");
+        if (p.length < 8) return -1;
+        long[] v = new long[p.length - 1];
+        for (int i = 1; i < p.length; i++) { try { v[i - 1] = Long.parseLong(p[i]); } catch (Exception e) { return -1; } }
+        long idle = v[3] + (v.length > 4 ? v[4] : 0), total = 0;
+        for (int i = 0; i < Math.min(8, v.length); i++) total += v[i];
+        long[] cur = {total, idle};
+        long[] prev = prevCpu; prevCpu = cur;
+        if (prev == null || cur[0] <= prev[0]) return -1;
+        long dt = cur[0] - prev[0], di = cur[1] - prev[1];
+        return (int) Math.max(0, Math.min(100, Math.round((dt - di) * 100.0 / dt)));
+    }
+
     // ------------------------------------------------------------------ снимок
 
     private JSONObject snapshot() throws Exception {
@@ -378,7 +405,6 @@ public final class Monitor {
         s.put("ts", now());
         s.put("model", model);
         s.put("name", "K981CN".equals(model) ? "JMGO N5 Pro" : "KD11CN".equals(model) ? "JMGO N5S Ultra Max" : "JMGO " + model);
-        s.put("chip", "MediaTek " + Build.HARDWARE.toUpperCase(Locale.ROOT));
         s.put("firmware_version", Build.VERSION.INCREMENTAL);
         String dlpv = readFile("/sys/class/jmgo_dlp/version");
         if (dlpv != null) s.put("dlp_version", dlpv);
@@ -427,10 +453,22 @@ public final class Monitor {
         String tach = readFile("/sys/class/jmgo_fan/tachometer");
         if (tach != null) {
             String[] p = tach.trim().split("\\s+");
-            try { if (p.length > 0) s.put("fan1", Integer.parseInt(p[0])); if (p.length > 1) s.put("fan2", Integer.parseInt(p[1])); } catch (Exception ignored) {}
+            try {
+                // одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка
+                Integer f1 = p.length > 0 ? Integer.parseInt(p[0]) : null, f2 = p.length > 1 ? Integer.parseInt(p[1]) : null;
+                if (f1 != null && f1 == 0 && lastFan1 != null && lastFan1 > 300) f1 = null; else if (f1 != null) lastFan1 = f1;
+                if (f2 != null && f2 == 0 && lastFan2 != null && lastFan2 > 300) f2 = null; else if (f2 != null) lastFan2 = f2;
+                if (f1 != null) s.put("fan1", f1);
+                if (f2 != null) s.put("fan2", f2);
+            } catch (Exception ignored) {}
         }
 
-        // яркость и ток лазеров
+        // яркость: уровень из меню и режим берём у сервиса JMGO, ток лазеров — из драйвера DLP
+        Integer bPct = getInt(IDX_BRIGHTNESS);
+        Integer bMode = getInt(IDX_BRIGHTNESS_MODE);
+        if (bPct != null && bPct >= 0) s.put("brightness_pct", bPct);
+        if (bMode != null) s.put("brightness_mode", bMode);
+        try { s.put("bw_status", Integer.parseInt(prop("sys.jmgo.black_white_status").trim())); } catch (Exception ignored) {}
         String br = readFile("/sys/class/jmgo_dlp/brightness");
         Matcher bm = br == null ? null : Pattern.compile("R(\\d+)G(\\d+)B(\\d+)").matcher(br);
         if (bm != null && bm.find()) {
@@ -442,29 +480,39 @@ public final class Monitor {
                 pct.put(Math.round(cur[i] * 100f / (mx == 0 ? 1023 : mx)));
             }
             s.put("laser_current_pct", pct);
-            JSONArray interp = lim.optJSONArray("interp_r");
-            if (interp != null && interp.length() > 0) {
-                int best = 0; boolean exact = false;
-                for (int i = 0; i < interp.length(); i++) {
-                    if (interp.optInt(i) == cur[0]) { best = i; exact = true; break; }
-                    if (Math.abs(interp.optInt(i) - cur[0]) < Math.abs(interp.optInt(best) - cur[0])) best = i;
-                }
-                s.put("brightness_menu", best + 1);
-                s.put("brightness_exact", exact);
+            // фиксированные режимы (Overlap, производительность, белый экран) — по точному току из таблицы прошивки
+            if (bMode == null || bMode < 0) {
+                for (int[] row : modeCurrents)
+                    if (Math.abs(cur[0] - row[1]) <= 2 && Math.abs(cur[1] - row[2]) <= 2 && Math.abs(cur[2] - row[3]) <= 2) { s.put("brightness_mode", row[0]); break; }
             }
-        } else {
-            Integer b = getInt(IDX_BRIGHTNESS);
-            if (b != null && b >= 0) { s.put("brightness_menu", Math.max(1, Math.min(10, (b + 5) / 10))); s.put("brightness_exact", false); }
         }
+        if (bPct != null && bPct >= 0) s.put("brightness_menu", Math.max(1, Math.min(10, Math.round(bPct / 10f))));
 
         // процессор
         Integer cpu = readInt("/sys/class/thermal/thermal_zone0/temp");
         if (cpu != null) s.put("temp", cpu / 1000);
         Integer trip = readInt("/sys/class/thermal/thermal_zone0/trip_point_0_temp");
         s.put("trip_passive0", trip != null ? trip / 1000 : 123);
+        String plat = prop("ro.jmgo.platform").trim();
+        if (!plat.isEmpty()) s.put("chip", "MediaTek " + plat.toUpperCase(Locale.ROOT));
         Integer freq = readInt("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+        Integer fHw = readInt("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+        Integer fCap = readInt("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
+        Integer cool = readInt("/sys/class/thermal/cooling_device0/cur_state");
         if (freq != null) s.put("freq", freq / 1000);
-        s.put("cpu_usage", -1);
+        if (fHw != null) s.put("freq_hw", fHw / 1000);
+        if (fCap != null) s.put("freq_cap", fCap / 1000);
+        Integer fMin = readInt("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq");
+        if (fMin != null) s.put("freq_min", fMin / 1000);
+        if (freq != null && fHw != null && fHw > 0) s.put("freq_pct", Math.round(freq * 100f / fHw));
+        boolean thr = (fCap != null && fHw != null && fCap < fHw) || (cool != null && cool > 0);
+        long nowS = now();
+        if (thr) { if (throttleSince == null) throttleSince = nowS; if (throttleFirst == null) throttleFirst = nowS; }
+        else throttleSince = null;
+        s.put("throttled", thr);
+        if (throttleSince != null) s.put("throttle_since", throttleSince);
+        if (throttleFirst != null) s.put("throttle_first", throttleFirst);
+        s.put("cpu_usage", cpuUsage());
 
         // память, накопитель, вывод
         ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
@@ -500,6 +548,7 @@ public final class Monitor {
         s.put("session_max", mx);
         s.put("session_start", sessionStart);
         s.put("extra_zones", new JSONArray());
+        try { s.put("app_version", ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName); } catch (Exception ignored) {}
         return s;
     }
 }
