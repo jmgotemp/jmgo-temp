@@ -67,6 +67,7 @@ public final class Monitor {
     private long[] prevCpu;
     private Long throttleSince, throttleFirst;
     private Integer lastFan1, lastFan2;
+    private int zeroFan1, zeroFan2;
 
     private Monitor(Context c) { ctx = c; }
 
@@ -93,7 +94,12 @@ public final class Monitor {
             try { snap = snapshot(); } catch (Throwable t) {
                 dlp = null;
                 snap = new JSONObject();
-                try { snap.put("error", "Нет связи с сервисом JMGO: " + t); snap.put("ts", now()); } catch (Exception ignored) {}
+                try {
+                    String code = t instanceof IllegalStateException && t.getMessage() != null && t.getMessage().startsWith("no_") ? t.getMessage() : "service";
+                    snap.put("error_code", code);
+                    snap.put("error", code.equals("service") ? String.valueOf(t) : code);
+                    snap.put("ts", now());
+                } catch (Exception ignored) {}
             }
             latest = snap;
             List<Listener> ls;
@@ -143,7 +149,7 @@ public final class Monitor {
         Class<?> sm = Class.forName("android.os.ServiceManager");
         Method gs = sm.getDeclaredMethod("getService", String.class);
         IBinder sys = (IBinder) gs.invoke(null, "jmgomiddle-01");
-        if (sys == null) throw new IllegalStateException("сервис jmgomiddle-01 не найден (это не JMGO?)");
+        if (sys == null) throw new IllegalStateException("no_service");
         Parcel d = Parcel.obtain(), r = Parcel.obtain();
         try {
             d.writeInterfaceToken(SYS);
@@ -151,7 +157,7 @@ public final class Monitor {
             r.readException();
             dlp = r.readStrongBinder();
         } finally { d.recycle(); r.recycle(); }
-        if (dlp == null) throw new IllegalStateException("DLP-сервис недоступен");
+        if (dlp == null) throw new IllegalStateException("no_dlp");
         return dlp;
     }
 
@@ -379,6 +385,22 @@ public final class Monitor {
         return out;
     }
 
+    /** 0..100 из сервиса -> пункт меню 1..10 */
+    static int menuLevel(int pct) { return Math.max(1, Math.min(10, Math.round(pct * 9 / 100f) + 1)); }
+
+    /** Ступень 1..10 по току красного лазера (обратная к DISPLAY_BRIGHTNESS_INTERPOLATOR). */
+    static Integer levelFromCurrent(int r, JSONArray interp) {
+        if (interp == null || interp.length() < 2) return null;
+        int n = interp.length();
+        if (r <= interp.optInt(0)) return 1;
+        if (r >= interp.optInt(n - 1)) return n;
+        for (int i = 0; i < n - 1; i++) {
+            int a = interp.optInt(i), b = interp.optInt(i + 1);
+            if (r >= a && r <= b) return Math.round(i + 1 + (b == a ? 0 : (r - a) / (float) (b - a)));
+        }
+        return null;
+    }
+
     /** Загрузка процессора по /proc/stat между двумя опросами; -1, если файл закрыт (SELinux). */
     private int cpuUsage() {
         String line = readFile("/proc/stat");
@@ -456,8 +478,9 @@ public final class Monitor {
             try {
                 // одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка
                 Integer f1 = p.length > 0 ? Integer.parseInt(p[0]) : null, f2 = p.length > 1 ? Integer.parseInt(p[1]) : null;
-                if (f1 != null && f1 == 0 && lastFan1 != null && lastFan1 > 300) f1 = null; else if (f1 != null) lastFan1 = f1;
-                if (f2 != null && f2 == 0 && lastFan2 != null && lastFan2 > 300) f2 = null; else if (f2 != null) lastFan2 = f2;
+                // вместо сбойного нуля повторяем прошлое значение (на графике без разрыва); 3 нуля подряд — вентилятор правда стоит
+                if (f1 != null && f1 == 0 && lastFan1 != null && lastFan1 > 300 && ++zeroFan1 < 3) f1 = lastFan1; else if (f1 != null) { lastFan1 = f1; if (f1 != 0) zeroFan1 = 0; }
+                if (f2 != null && f2 == 0 && lastFan2 != null && lastFan2 > 300 && ++zeroFan2 < 3) f2 = lastFan2; else if (f2 != null) { lastFan2 = f2; if (f2 != 0) zeroFan2 = 0; }
                 if (f1 != null) s.put("fan1", f1);
                 if (f2 != null) s.put("fan2", f2);
             } catch (Exception ignored) {}
@@ -486,7 +509,21 @@ public final class Monitor {
                     if (Math.abs(cur[0] - row[1]) <= 2 && Math.abs(cur[1] - row[2]) <= 2 && Math.abs(cur[2] - row[3]) <= 2) { s.put("brightness_mode", row[0]); break; }
             }
         }
-        if (bPct != null && bPct >= 0) s.put("brightness_menu", Math.max(1, Math.min(10, Math.round(bPct / 10f))));
+        // Ступени меню 1..10 сервис хранит как (N-1)*100/9: 0, 11, 22 … 88, 100 (так же строит BrightnessInterpolator в hippo)
+        if (bPct != null && bPct >= 0) { s.put("brightness_menu", menuLevel(bPct)); s.put("brightness_exact", true); }
+        int modeNow = s.optInt("brightness_mode", -1);
+        boolean fixedMode = modeNow == 15 || modeNow == 16 || modeNow == 22 || modeNow == 23;
+        Integer curLevel = null;
+        if (bm != null && !fixedMode) {
+            bm.reset();
+            if (bm.find()) curLevel = levelFromCurrent(Integer.parseInt(bm.group(1)), lim.optJSONArray("interp_r"));
+        }
+        if (!s.has("brightness_menu") && curLevel != null) { s.put("brightness_menu", curLevel); s.put("brightness_exact", false); }
+        // AL 2.0 / Dynamic Black: флаг, который пишет сама прошивка; мощность лазеров меняется по сцене — показываем ступень по току
+        int al = -1;
+        try { al = android.provider.Settings.System.getInt(ctx.getContentResolver(), "dynamic_black_enabled", -1); } catch (Throwable ignored) {}
+        if (al >= 0) s.put("al_enabled", al == 1);
+        if (curLevel != null && (al == 1 || (al < 0 && curLevel != s.optInt("brightness_menu", curLevel)))) s.put("brightness_actual", curLevel);
 
         // процессор
         Integer cpu = readInt("/sys/class/thermal/thermal_zone0/temp");

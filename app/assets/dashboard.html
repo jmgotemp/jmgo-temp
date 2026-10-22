@@ -35,6 +35,7 @@ h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .version-line span,.zone-line span{color:var(--muted)}
 .version-line b,.zone-line b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ultra-extra{display:none}.ultra-extra.visible{display:block}
+.cpu-pair{display:flex;align-items:baseline;gap:1vw}.cpu-pair .sep{color:var(--line);font-size:3.6vh;font-weight:300}
 .fan-pair{display:flex;gap:8px}.fan-item{flex:1;min-width:0;text-align:center}
 .fan-value{font-size:3.6vh;font-weight:650;font-variant-numeric:tabular-nums}.fan-name{font-size:1.25vh;color:var(--muted);white-space:nowrap}
 .laser-row{display:flex;gap:6px;margin-top:.6vh}
@@ -89,7 +90,7 @@ html.narrow .protection{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))
 <div class="status" id="status"></div></div></div>
 <div id="error"></div><div id="ovWarn"></div><div id="alert"></div>
 <section class="kpis">
-  <div class="metric"><div class="label" data-i="cpuT"></div><div class="big" id="temp">—</div><div class="metric-sub" id="cpuSub">—</div></div>
+  <div class="metric"><div class="label" data-i="cpuT"></div><div class="cpu-pair"><div class="big" id="temp">—</div><span class="sep" id="loadSep">|</span><div class="big" id="load">—</div></div><div class="metric-sub" id="cpuSub">—</div></div>
   <div class="metric"><div class="label" data-i="dmdT"></div><div class="big" id="dmd">—</div><div class="metric-sub" id="dmdSub">—</div><div class="bar"><i id="dmdBar"></i></div></div>
   <div class="metric"><div class="label" data-i="laserT"></div><div class="big" id="laserMax">—</div><div class="laser-row" id="laserRow"></div><div class="metric-sub" id="laserSub">—</div></div>
   <div class="metric"><div class="label" data-i="fanT"></div><div class="fan-pair"><div class="fan-item"><div class="fan-value" id="fan1">—</div><div class="fan-name" id="fan1n"></div></div><div class="fan-item"><div class="fan-value" id="fan2">—</div><div class="fan-name" id="fan2n"></div></div></div><div class="metric-sub" id="fanSub">—</div></div>
@@ -122,14 +123,20 @@ ru:{
  ovWarn:'Нет разрешения на окно поверх других приложений. Выдайте его один раз с компьютера:',
  errApp:'Сервис JMGO не ответил. Это приложение работает только на проекторах JMGO.',
  errDash:'Проверь, что ADB включён и проектор в той же Wi‑Fi сети. Если на компьютере включён VPN — он может перехватывать локальную сеть.',
- cpuT:'Процессор, °C',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C (макс.)',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
+ cpuT:'Процессор: °C | загрузка',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C (макс.)',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
  load:'загрузка',mhz:'МГц',hz:'Гц',gb:'ГБ',
  cpuThrAt:t=>`сброс частоты с ${t}&nbsp;°C · на оптику не влияет`,
  thrNow:(since,f)=>`⚠ троттлинг с ${since}: потолок ${f} МГц`,
  toOff:(m,l)=>`до отключения ${m} °C (порог ${l})`,toDim:(m,l)=>`до снижения яркости ${m} °C (порог ${l})`,
  stale:s=>`нет свежих данных (${s} с)`,waiting:'жду данные…',module:'модуль',
- fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p} % мощности${t!=null?` · автоматика держит лазеры около ${t} °C`:''}`,fanNo:'мощность — нет данных',
- brMax:'Макс.',current:'ток лазеров',curNo:'ток лазеров недоступен',
+ fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p}&nbsp;% мощности${t!=null?` · автоматика держит лазеры около ${t}&nbsp;°C`:''}`,fanNo:'мощность — нет данных',
+ brMax:'Макс.',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включён',
+ e_no_service:'Сервис jmgomiddle-01 не найден — это не проектор JMGO?',e_no_dlp:'DLP-сервис JMGO недоступен.',e_service:'Нет связи с сервисом JMGO.',
+ e_connecting:'Подключение к проектору…',e_no_adb:'Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.',
+ e_connect:t=>`Не удалось подключиться к ${t}. Проверьте IP:порт в настройках беспроводной отладки.`,
+ e_not_found:'Проектор не найден. Включите беспроводную отладку ADB на проекторе и подключите компьютер к той же сети (или запустите скрипт с адресом: jmgo_dash.py 192.168.x.x:порт).',
+ e_timeout:'Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключите и включите беспроводную отладку на проекторе.',e_adb:'Ошибка ADB',
+ lasersLim:['лазеры: −ярк. / откл.',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'белый экран',
  modes:{14:'авто (по камере)',15:'Overlap',16:'производительность',20:'автотрапеция',21:'супер-контраст',22:'белый экран: ток повышен',23:'производительность · белый экран'},
  ch1:'Матрица и лазеры',ch1s:'· последний час · пунктир — пороги защиты',ch2:'Процессор и вентиляторы',ch2s:'· °C и % слева, об/мин справа · красный фон — троттлинг',
@@ -157,14 +164,20 @@ en:{
  ovWarn:'No permission to draw over other apps. Grant it once from a computer:',
  errApp:'The JMGO service did not respond. This app works only on JMGO projectors.',
  errDash:'Check that ADB is enabled and the projector is on the same Wi‑Fi network. A VPN on the computer may intercept local traffic.',
- cpuT:'CPU, °C',dmdT:'DMD chip, °C',laserT:'Lasers, °C (max)',fanT:'Fans, rpm',brT:'Brightness (laser power)',
+ cpuT:'CPU: °C | load',dmdT:'DMD chip, °C',laserT:'Lasers, °C (max)',fanT:'Fans, rpm',brT:'Brightness (laser power)',
  load:'load',mhz:'MHz',hz:'Hz',gb:'GB',
  cpuThrAt:t=>`throttles from ${t}&nbsp;°C · doesn't affect the optics`,
  thrNow:(since,f)=>`⚠ throttling since ${since}: capped at ${f} MHz`,
  toOff:(m,l)=>`${m} °C to shutdown (limit ${l})`,toDim:(m,l)=>`${m} °C to dimming (limit ${l})`,
  stale:s=>`no fresh data (${s} s)`,waiting:'waiting for data…',module:'module',
- fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p} % power${t!=null?` · auto control keeps lasers near ${t} °C`:''}`,fanNo:'power — no data',
- brMax:'Max',current:'laser current',curNo:'laser current unavailable',
+ fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}&nbsp;% power${t!=null?` · auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
+ brMax:'Max',current:'laser current',curNo:'laser current unavailable',alNow:n=>`AL 2.0: now ≈${n}/10 by current`,alOn:'AL 2.0 on',
+ e_no_service:'Service jmgomiddle-01 not found — is this a JMGO projector?',e_no_dlp:'JMGO DLP service is unavailable.',e_service:'No connection to the JMGO service.',
+ e_connecting:'Connecting to the projector…',e_no_adb:'adb not found. Put jmgo_dash.py into the platform-tools folder or install adb.',
+ e_connect:t=>`Could not connect to ${t}. Check IP:port in the wireless debugging settings.`,
+ e_not_found:'Projector not found. Enable ADB wireless debugging on the projector and connect the computer to the same network (or start the script with an address: jmgo_dash.py 192.168.x.x:port).',
+ e_timeout:'The projector does not respond over ADB (reconnecting…). If it persists, turn wireless debugging off and on again on the projector.',e_adb:'ADB error',
+ lasersLim:['lasers: dim / off',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'white screen',
  modes:{14:'auto (camera)',15:'Overlap',16:'performance',20:'auto keystone',21:'super contrast',22:'white screen: boosted current',23:'performance · white screen'},
  ch1:'DMD and lasers',ch1s:'· last hour · dashed = protection limits',ch2:'CPU and fans',ch2s:'· °C and % left, rpm right · red = throttling',
@@ -244,8 +257,11 @@ function drawThermal(points,lim){
   timeAxis(x,points,L,R,W,T0+ph,dpr);
   const lbl=[];
   const ref=(v,color,label)=>{if(v==null)return;const y=Y(v);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle=color;x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();lbl.push({y,color,label})};
+  if(lim.laser_shutdown!=null&&lim.laser_derate!=null&&Math.abs(lim.laser_shutdown-lim.laser_derate)<=1.5){
+    const ll=T('lasersLim');ref(lim.laser_derate,'#ff9f43',ll[0]);lbl.push({y:Y(lim.laser_derate)+0.01,color:'#f16b68',label:ll[1](lim.laser_derate,lim.laser_shutdown)});const y=Y(lim.laser_shutdown);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle='#f16b68';x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();
+  }else{
   ref(lim.laser_shutdown,'#f16b68',T('lOff',lim.laser_shutdown));
-  ref(lim.laser_derate,'#ff9f43',T('lDim',lim.laser_derate));
+  ref(lim.laser_derate,'#ff9f43',T('lDim',lim.laser_derate));}
   ref(lim.dmd_shutdown,'#f2bd55',T('dOff',lim.dmd_shutdown));
   const tg=pidTargets(lim);if(tg.length)ref(tg[0],'#8b93a1',T('fTgt',tg[0]));
   lbl.sort((a,b)=>a.y-b.y);const gap=15*dpr;let prev=-1e9;
@@ -267,16 +283,17 @@ function renderProtection(d){
     `<div class="threshold info"><b>${pt.length?pt[0]+' °C':'—'}</b><span>${T('pFan',pt.length>1?pt[pt.length-1]:null)}</span></div>`].join(''));
   set('protNote',`${T(l.from_firmware?'nFw':'nDef')} ${T(l.dmd_source==='dlp'?'nDlp':'nNtc')} ${T('nPhoto')}`);
 }
+function errText(d){const c=d.error_code;if(c&&I18N.ru['e_'+c]!=null){const t=T('e_'+c,...(d.error_args||[]));return esc(t)+(c==='adb'||c==='service'?'<br><span class="muted">'+esc(d.error)+'</span>':'')}return esc(d.error)}
 function render(r){
   const d=r.latest||{};
-  if(d.error){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('offline');$('error').innerHTML=`<div class="error">${esc(d.error)}<br><span class="muted">${T(IS_APP?'errApp':'errDash')}</span></div>`;return}
+  if(d.error){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('offline');$('error').innerHTML=`<div class="error">${errText(d)}<br><span class="muted">${T(IS_APP?'errApp':'errDash')}</span></div>`;return}
   $('status').className='status';$('status').innerHTML='<i class="dot"></i>'+T('connected');$('error').innerHTML='';
   $('name').textContent=d.name||'JMGO';
   $('device').textContent=`${T('updated')} ${new Date(d.ts*1000).toLocaleTimeString(LANG==='ru'?'ru':'en-GB')}${d.uptime?' · '+T('uptime',Math.floor(d.uptime/3600),Math.floor(d.uptime%3600/60)):''}`;
   const th=d.thermal||{},lim=d.limits||{};
-  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':esc(t));$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
-  const parts=[];if(d.chip)parts.push(esc(d.chip));if(d.cpu_usage!=null&&d.cpu_usage>=0)parts.push(`${T('load')} ${d.cpu_usage}%`);if(d.freq)parts.push(`${d.freq} ${T('mhz')}`);
-  set('cpuSub',`${parts.join(' · ')}<br>${d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('cpuThrAt',thr)}`);
+  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':`${esc(t)}<span class="unit">°</span>`);$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
+  const hasLoad=d.cpu_usage!=null&&d.cpu_usage>=0;set('load',hasLoad?`${d.cpu_usage}<span class="unit">%</span>`:'');$('load').style.display=$('loadSep').style.display=hasLoad?'':'none';
+  set('cpuSub',`${esc(d.chip||'')}<br>${d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('cpuThrAt',thr)}`);
   const dm=th.dmd,dmM=dm!=null&&lim.dmd_shutdown?lim.dmd_shutdown-dm:null;
   set('dmd',dm==null?'—':fmt(dm));$('dmd').className='big '+margCls(dmM);
   set('dmdSub',dm==null?(th.age!=null?T('stale',th.age):T('waiting')):T('toOff',fmt(dmM),lim.dmd_shutdown));
@@ -291,10 +308,10 @@ function render(r){
   const mode=d.brightness_mode,fixed=FIXED_MODES.includes(mode);
   let big='—';
   if(fixed)big=T('brMax');
-  else if(d.brightness_pct!=null&&d.brightness_pct>=0){big=`${Math.round(d.brightness_pct/10)}<span class="unit"> / 10</span>`}
-  else if(d.brightness_menu!=null)big=`≈${d.brightness_menu}<span class="unit"> / 10</span>`;
+  else if(d.brightness_menu!=null)big=`${d.brightness_exact===false?'≈':''}${d.brightness_menu}<span class="unit"> / 10</span>`;
   set('brightness',big);
   const bs=[];const ml=(T('modes')||{})[mode];if(ml)bs.push(esc(ml));
+  if(!fixed&&d.brightness_actual!=null)bs.push(`<b style="color:var(--blue)">${T('alNow',d.brightness_actual)}</b>`);else if(!fixed&&d.al_enabled)bs.push(T('alOn'));
   if(d.bw_status===2&&mode!==22&&mode!==23)bs.push(T('bwWhite'));
   const pc=d.laser_current_pct;
   bs.push(pc?`${T('current')}: <b style="color:#ff6b6b">R ${pc[0]}%</b> · <b style="color:#5ee08a">G ${pc[1]}%</b> · <b style="color:#6fa8ff">B ${pc[2]}%</b>`:T('curNo'));

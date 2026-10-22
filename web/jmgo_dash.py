@@ -63,12 +63,33 @@ def find_adb() -> str:
     return "adb"
 
 
-VERSION = "1.2"  # та же нумерация, что у APK JMGO Temp
+VERSION = "1.2.1"  # та же нумерация, что у APK JMGO Temp
 
 ADB = find_adb()
 TARGET = ""  # IP:порт из командной строки (необязательно)
 HISTORY = collections.deque(maxlen=1800)  # примерно час при опросе раз в 2 секунды
-LATEST: dict = {"error": "Подключение к проектору…"}
+LATEST: dict = {"error": "Подключение к проектору…", "error_code": "connecting"}
+
+
+class DashError(RuntimeError):
+    """Ошибка с кодом: текст переводится на странице (RU/EN)."""
+    def __init__(self, code: str, message: str, *args: str):
+        super().__init__(message)
+        self.code, self.args_ = code, list(args)
+
+
+def _console_ru() -> bool:
+    import locale
+    lang = os.environ.get("LANG") or os.environ.get("LC_ALL") or ""
+    if not lang:
+        try:
+            lang = locale.getlocale()[0] or ""
+        except Exception:
+            lang = ""
+    return lang.lower().startswith("ru") or lang.startswith("Russian")
+
+
+CONSOLE_RU = _console_ru()
 LOCK = threading.Lock()
 
 THERMAL_FRESH_S = 40  # если дольше нет строк от hippo — данные считаем устаревшими
@@ -106,6 +127,7 @@ echo "fan=$(val /sys/class/jmgo_fan/tachometer)"
 echo "freq=$(val /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
 echo "freq_max=$(val /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)"
 echo "freq_cap=$(val /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq)"
+echo "freq_min=$(val /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq)"
 echo "jplatform=$(getprop ro.jmgo.platform)"
 echo "bw_status=$(getprop sys.jmgo.black_white_status)"
 echo "cooling_state=$(val /sys/class/thermal/cooling_device0/cur_state)"
@@ -129,6 +151,7 @@ echo "dlp_model=$(getprop vendor.jmgo.dlp.model)"
 echo "brightness=$(settings get global jmgo_display_brightness 2>/dev/null)"
 echo "picture_backlight=$(settings get global picture_backlight 2>/dev/null)"
 echo "picture_mode=$(settings get global picture_mode 2>/dev/null)"
+echo "dynamic_black=$(settings get system dynamic_black_enabled 2>/dev/null)"
 echo "uptime=$(cut -d. -f1 /proc/uptime)"
 echo "loadavg=$(cat /proc/loadavg)"
 CPU1=$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
@@ -185,11 +208,11 @@ def discover_device() -> str:
                 if not TARGET or serial == TARGET:
                     return serial
     except FileNotFoundError:
-        raise RuntimeError("Не найден adb. Положи jmgo_dash.py в папку platform-tools или установи adb.")
+        raise DashError("no_adb", "Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.")
     except Exception:
         pass
     if TARGET:
-        raise RuntimeError(f"Не удалось подключиться к {TARGET}. Проверь IP:порт в настройках беспроводной отладки.")
+        raise DashError("connect", f"Не удалось подключиться к {TARGET}. Проверьте IP:порт в настройках беспроводной отладки.", TARGET)
 
     run([ADB, "start-server"], timeout=20)
     time.sleep(1.5)
@@ -203,8 +226,8 @@ def discover_device() -> str:
                     run([ADB, "connect", endpoint], timeout=20)
                     time.sleep(0.8)
                     return endpoint
-    raise RuntimeError("Проектор не найден. Включи беспроводную отладку ADB на проекторе и подключи компьютер к той же сети "
-                       "(или запусти скрипт с адресом: jmgo_dash.py 192.168.x.x:порт).")
+    raise DashError("not_found", "Проектор не найден. Включите беспроводную отладку ADB на проекторе и подключите компьютер к той же сети "
+                    "(или запустите скрипт с адресом: jmgo_dash.py 192.168.x.x:порт).")
 
 
 def adb_shell(serial: str, script: str = REMOTE_SCRIPT, timeout: float = 20) -> str:
@@ -453,13 +476,25 @@ def parse_dlp_current(raw: str) -> list[int] | None:
 
 
 def brightness_level(r: int | None, interp: list[int]) -> tuple[int | None, bool]:
-    """Уровень 1–10 в меню по току красного лазера (таблица DISPLAY_BRIGHTNESS_INTERPOLATOR)."""
-    if r is None or not interp:
+    """Ступень 1–10 по току красного лазера (обратная к DISPLAY_BRIGHTNESS_INTERPOLATOR)."""
+    if r is None or not interp or len(interp) < 2:
         return None, False
     if r in interp:
         return interp.index(r) + 1, True
-    nearest = min(range(len(interp)), key=lambda i: abs(interp[i] - r))
-    return nearest + 1, False
+    if r <= interp[0]:
+        return 1, False
+    if r >= interp[-1]:
+        return len(interp), False
+    for i in range(len(interp) - 1):
+        a, b = interp[i], interp[i + 1]
+        if a <= r <= b:
+            return int(i + 1 + (r - a) / (b - a) + 0.5), False
+    return None, False
+
+
+def menu_level(pct: int) -> int:
+    """0–100 из настройки -> пункт меню 1–10. Ступени хранятся как (N-1)*100/9: 0, 11, 22 … 88, 100."""
+    return max(1, min(10, int(pct * 9 / 100 + 0.5) + 1))
 
 
 def parse_snapshot(serial: str) -> dict:
@@ -554,6 +589,7 @@ def parse_snapshot(serial: str) -> dict:
         "freq_max": integer("freq_max") // 1000 or None,
         "freq_hw": integer("freq_max") // 1000 or None,
         "freq_cap": integer("freq_cap") // 1000 or None,
+        "freq_min": integer("freq_min") // 1000 or None,
         "bw_status": integer("bw_status", -1),
         "cooling_state": integer("cooling_state"),
         "cooling_max": integer("cooling_max"),
@@ -573,6 +609,7 @@ def parse_snapshot(serial: str) -> dict:
         "dlp_width": dlp_width,
         "dlp_height": dlp_height,
         "picture_mode": data.get("picture_mode", ""),
+        "dynamic_black": integer("dynamic_black", -1),
         "uptime": integer("uptime"),
         "load_1m": load_1m,
         "cpu_usage": integer("cpu_usage", -1),
@@ -637,12 +674,21 @@ def enrich(snapshot: dict, limits: dict) -> None:
                 break
     snapshot["brightness_mode"] = mode
     raw = snapshot.get("brightness_raw", -1)
+    fixed = mode in (15, 16, 22, 23)
+    cur_level = None if fixed else brightness_level(cur[0] if cur else None, limits.get("interp_r", []))[0]
     if raw is not None and raw >= 0:
         snapshot["brightness_pct"] = raw
-        snapshot["brightness_menu"] = max(1, min(10, int(raw / 10 + 0.5)))
+        snapshot["brightness_menu"] = menu_level(raw)
+        snapshot["brightness_exact"] = True
     else:
-        level, _exact = brightness_level(cur[0] if cur else None, limits.get("interp_r", []))
-        snapshot["brightness_menu"] = level
+        snapshot["brightness_menu"] = cur_level
+        snapshot["brightness_exact"] = False
+    # AL 2.0 (Dynamic Black): прошивка сама пишет флаг; ток лазеров меняется по сцене — показываем ступень по току
+    al = snapshot.get("dynamic_black", -1)
+    if al is not None and al >= 0:
+        snapshot["al_enabled"] = al == 1
+    if cur_level is not None and (al == 1 or ((al is None or al < 0) and cur_level != snapshot.get("brightness_menu"))):
+        snapshot["brightness_actual"] = cur_level
 
     # частота процессора и троттлинг: система снижает потолок частоты (scaling_max_freq) или включает охлаждение
     hw, cap, fq = snapshot.get("freq_hw"), snapshot.get("freq_cap"), snapshot.get("freq")
@@ -658,13 +704,18 @@ def enrich(snapshot: dict, limits: dict) -> None:
     snapshot["throttle_since"] = SESSION.get("thr_since")
     snapshot["throttle_first"] = SESSION.get("thr_first")
 
-    # одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка
+    # одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка:
+    # повторяем прошлое значение (на графике без разрыва); 3 нуля подряд — вентилятор правда стоит
     for key in ("fan1", "fan2"):
         val, prev = snapshot.get(key), SESSION.get("last_" + key)
-        if val == 0 and prev and prev > 300:
-            snapshot[key] = None
+        zeros = SESSION.get("zero_" + key, 0)
+        if val == 0 and prev and prev > 300 and zeros + 1 < 3:
+            SESSION["zero_" + key] = zeros + 1
+            snapshot[key] = prev
         elif val is not None:
             SESSION["last_" + key] = val
+            if val != 0:
+                SESSION["zero_" + key] = 0
 
     # максимумы за сеанс работы дашборда
     if SESSION["serial"] != snapshot["serial"]:
@@ -715,10 +766,15 @@ def poll() -> None:
                         pass
             serial = ""
             WATCHER.stop()
-            msg = ("Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключи и включи "
-                   "беспроводную отладку на проекторе.") if isinstance(exc, subprocess.TimeoutExpired) else str(exc)
+            if isinstance(exc, subprocess.TimeoutExpired):
+                err = {"error": "Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключите и включите "
+                                "беспроводную отладку на проекторе.", "error_code": "timeout"}
+            elif isinstance(exc, DashError):
+                err = {"error": str(exc), "error_code": exc.code, "error_args": exc.args_}
+            else:
+                err = {"error": str(exc), "error_code": "adb"}
             with LOCK:
-                LATEST = {"error": msg, "ts": int(time.time())}
+                LATEST = {**err, "ts": int(time.time())}
                 HISTORY.clear()
         time.sleep(2)
 
@@ -760,6 +816,7 @@ h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .version-line span,.zone-line span{color:var(--muted)}
 .version-line b,.zone-line b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ultra-extra{display:none}.ultra-extra.visible{display:block}
+.cpu-pair{display:flex;align-items:baseline;gap:1vw}.cpu-pair .sep{color:var(--line);font-size:3.6vh;font-weight:300}
 .fan-pair{display:flex;gap:8px}.fan-item{flex:1;min-width:0;text-align:center}
 .fan-value{font-size:3.6vh;font-weight:650;font-variant-numeric:tabular-nums}.fan-name{font-size:1.25vh;color:var(--muted);white-space:nowrap}
 .laser-row{display:flex;gap:6px;margin-top:.6vh}
@@ -814,7 +871,7 @@ html.narrow .protection{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))
 <div class="status" id="status"></div></div></div>
 <div id="error"></div><div id="ovWarn"></div><div id="alert"></div>
 <section class="kpis">
-  <div class="metric"><div class="label" data-i="cpuT"></div><div class="big" id="temp">—</div><div class="metric-sub" id="cpuSub">—</div></div>
+  <div class="metric"><div class="label" data-i="cpuT"></div><div class="cpu-pair"><div class="big" id="temp">—</div><span class="sep" id="loadSep">|</span><div class="big" id="load">—</div></div><div class="metric-sub" id="cpuSub">—</div></div>
   <div class="metric"><div class="label" data-i="dmdT"></div><div class="big" id="dmd">—</div><div class="metric-sub" id="dmdSub">—</div><div class="bar"><i id="dmdBar"></i></div></div>
   <div class="metric"><div class="label" data-i="laserT"></div><div class="big" id="laserMax">—</div><div class="laser-row" id="laserRow"></div><div class="metric-sub" id="laserSub">—</div></div>
   <div class="metric"><div class="label" data-i="fanT"></div><div class="fan-pair"><div class="fan-item"><div class="fan-value" id="fan1">—</div><div class="fan-name" id="fan1n"></div></div><div class="fan-item"><div class="fan-value" id="fan2">—</div><div class="fan-name" id="fan2n"></div></div></div><div class="metric-sub" id="fanSub">—</div></div>
@@ -847,21 +904,27 @@ ru:{
  ovWarn:'Нет разрешения на окно поверх других приложений. Выдайте его один раз с компьютера:',
  errApp:'Сервис JMGO не ответил. Это приложение работает только на проекторах JMGO.',
  errDash:'Проверь, что ADB включён и проектор в той же Wi‑Fi сети. Если на компьютере включён VPN — он может перехватывать локальную сеть.',
- cpuT:'Процессор, °C',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C (макс.)',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
+ cpuT:'Процессор: °C | загрузка',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C (макс.)',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
  load:'загрузка',mhz:'МГц',hz:'Гц',gb:'ГБ',
  cpuThrAt:t=>`сброс частоты с ${t}&nbsp;°C · на оптику не влияет`,
  thrNow:(since,f)=>`⚠ троттлинг с ${since}: потолок ${f} МГц`,
  toOff:(m,l)=>`до отключения ${m} °C (порог ${l})`,toDim:(m,l)=>`до снижения яркости ${m} °C (порог ${l})`,
  stale:s=>`нет свежих данных (${s} с)`,waiting:'жду данные…',module:'модуль',
- fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p} % мощности${t!=null?` · автоматика держит лазеры около ${t} °C`:''}`,fanNo:'мощность — нет данных',
- brMax:'Макс.',current:'ток лазеров',curNo:'ток лазеров недоступен',
+ fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p}&nbsp;% мощности${t!=null?` · автоматика держит лазеры около ${t}&nbsp;°C`:''}`,fanNo:'мощность — нет данных',
+ brMax:'Макс.',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включён',
+ e_no_service:'Сервис jmgomiddle-01 не найден — это не проектор JMGO?',e_no_dlp:'DLP-сервис JMGO недоступен.',e_service:'Нет связи с сервисом JMGO.',
+ e_connecting:'Подключение к проектору…',e_no_adb:'Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.',
+ e_connect:t=>`Не удалось подключиться к ${t}. Проверьте IP:порт в настройках беспроводной отладки.`,
+ e_not_found:'Проектор не найден. Включите беспроводную отладку ADB на проекторе и подключите компьютер к той же сети (или запустите скрипт с адресом: jmgo_dash.py 192.168.x.x:порт).',
+ e_timeout:'Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключите и включите беспроводную отладку на проекторе.',e_adb:'Ошибка ADB',
+ lasersLim:['лазеры: −ярк. / откл.',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'белый экран',
  modes:{14:'авто (по камере)',15:'Overlap',16:'производительность',20:'автотрапеция',21:'супер-контраст',22:'белый экран: ток повышен',23:'производительность · белый экран'},
  ch1:'Матрица и лазеры',ch1s:'· последний час · пунктир — пороги защиты',ch2:'Процессор и вентиляторы',ch2s:'· °C и % слева, об/мин справа · красный фон — троттлинг',
  collecting:'Собираю историю…',noTemp:'Нет данных о температуре',
  lOff:v=>`лазеры: откл. ${v}°`,lDim:v=>`лазеры: −яркость ${v}°`,dOff:v=>`DMD: откл. ${v}°`,fTgt:v=>`цель вент. ${v}°`,
  laserModule:n=>`лазерный модуль ${n}`,cpuC:'процессор, °C',loadP:'загрузка, %',freqP:'частота, % от макс.',
- freqT:'Частота процессора',freqHint:(mx,ld)=>`макс. ${mx} МГц${ld!=null?` · загрузка ${ld}%`:''}`,
+ freqT:'Частота процессора',freqHint:(mx,ld)=>`макс. ${mx} МГц${ld!=null?` · загрузка ${ld}%`:''}`,freqFixed:'зафиксирована прошивкой · снижается только при перегреве',thrCap:f=>`⚠ троттлинг, потолок ${f} МГц`,
  memT:'Память',memHint:(u,t)=>`${u} МБ из ${t} МБ занято`,outT:'Вывод изображения',outHint:'Разрешение · частота (вывод проектора)',hdmi:'HDMI-сигнал',
  stT:'Накопитель',free:'свободно',maxT:'Максимум за сеанс',lasers:'Лазеры',cpu:'Процессор',throttling:'Троттлинг',no:'нет',was:t=>`был, ${t}`,
  verT:'Версии',app:'JMGO Temp',dash:'Дашборд',fw:'Прошивка',model:'Модель',extraT:'Доп. датчики',
@@ -882,21 +945,27 @@ en:{
  ovWarn:'No permission to draw over other apps. Grant it once from a computer:',
  errApp:'The JMGO service did not respond. This app works only on JMGO projectors.',
  errDash:'Check that ADB is enabled and the projector is on the same Wi‑Fi network. A VPN on the computer may intercept local traffic.',
- cpuT:'CPU, °C',dmdT:'DMD chip, °C',laserT:'Lasers, °C (max)',fanT:'Fans, rpm',brT:'Brightness (laser power)',
+ cpuT:'CPU: °C | load',dmdT:'DMD chip, °C',laserT:'Lasers, °C (max)',fanT:'Fans, rpm',brT:'Brightness (laser power)',
  load:'load',mhz:'MHz',hz:'Hz',gb:'GB',
  cpuThrAt:t=>`throttles from ${t}&nbsp;°C · doesn't affect the optics`,
  thrNow:(since,f)=>`⚠ throttling since ${since}: capped at ${f} MHz`,
  toOff:(m,l)=>`${m} °C to shutdown (limit ${l})`,toDim:(m,l)=>`${m} °C to dimming (limit ${l})`,
  stale:s=>`no fresh data (${s} s)`,waiting:'waiting for data…',module:'module',
- fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p} % power${t!=null?` · auto control keeps lasers near ${t} °C`:''}`,fanNo:'power — no data',
- brMax:'Max',current:'laser current',curNo:'laser current unavailable',
+ fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}&nbsp;% power${t!=null?` · auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
+ brMax:'Max',current:'laser current',curNo:'laser current unavailable',alNow:n=>`AL 2.0: now ≈${n}/10 by current`,alOn:'AL 2.0 on',
+ e_no_service:'Service jmgomiddle-01 not found — is this a JMGO projector?',e_no_dlp:'JMGO DLP service is unavailable.',e_service:'No connection to the JMGO service.',
+ e_connecting:'Connecting to the projector…',e_no_adb:'adb not found. Put jmgo_dash.py into the platform-tools folder or install adb.',
+ e_connect:t=>`Could not connect to ${t}. Check IP:port in the wireless debugging settings.`,
+ e_not_found:'Projector not found. Enable ADB wireless debugging on the projector and connect the computer to the same network (or start the script with an address: jmgo_dash.py 192.168.x.x:port).',
+ e_timeout:'The projector does not respond over ADB (reconnecting…). If it persists, turn wireless debugging off and on again on the projector.',e_adb:'ADB error',
+ lasersLim:['lasers: dim / off',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'white screen',
  modes:{14:'auto (camera)',15:'Overlap',16:'performance',20:'auto keystone',21:'super contrast',22:'white screen: boosted current',23:'performance · white screen'},
  ch1:'DMD and lasers',ch1s:'· last hour · dashed = protection limits',ch2:'CPU and fans',ch2s:'· °C and % left, rpm right · red = throttling',
  collecting:'Collecting history…',noTemp:'No temperature data',
  lOff:v=>`lasers: off ${v}°`,lDim:v=>`lasers: dim ${v}°`,dOff:v=>`DMD: off ${v}°`,fTgt:v=>`fan target ${v}°`,
  laserModule:n=>`laser module ${n}`,cpuC:'CPU, °C',loadP:'load, %',freqP:'frequency, % of max',
- freqT:'CPU frequency',freqHint:(mx,ld)=>`max ${mx} MHz${ld!=null?` · load ${ld}%`:''}`,
+ freqT:'CPU frequency',freqHint:(mx,ld)=>`max ${mx} MHz${ld!=null?` · load ${ld}%`:''}`,freqFixed:'fixed by firmware · drops only when overheating',thrCap:f=>`⚠ throttling, capped at ${f} MHz`,
  memT:'Memory',memHint:(u,t)=>`${u} MB of ${t} MB used`,outT:'Video output',outHint:'Resolution · refresh (projector output)',hdmi:'HDMI signal',
  stT:'Storage',free:'free',maxT:'Session max',lasers:'Lasers',cpu:'CPU',throttling:'Throttling',no:'no',was:t=>`yes, ${t}`,
  verT:'Versions',app:'JMGO Temp',dash:'Dashboard',fw:'Firmware',model:'Model',extraT:'Extra sensors',
@@ -948,12 +1017,10 @@ function drawCombined(points){
   const line=(key,color,scale,w,dash)=>{x.beginPath();let s=false;points.forEach((p,i)=>{const v=p[key];if(v==null||v<0){s=false;return}const py=T0+(1-v/scale)*ph;if(!s){x.moveTo(X(i),py);s=true}else x.lineTo(X(i),py)});x.save();if(dash)x.setLineDash(dash);x.strokeStyle=color;x.lineWidth=w*dpr;x.stroke();x.restore()};
   const has=k=>points.some(p=>p[k]!=null&&p[k]>=0);
   line('fan1','#72aaff',fMax,2);line('fan2','#d49aff',fMax,2);
-  if(has('fpct'))line('fpct','#e9edf3',tMax,1.2,[5*dpr,4*dpr]);
   if(has('load'))line('load','#f2bd55',tMax,1.5);
   line('temp','#52d273',tMax,2.5);
   let lg=`<span><i class="legend-dot" style="background:#52d273"></i>${T('cpuC')}</span>`;
   if(has('load'))lg+=`<span><i class="legend-dot" style="background:#f2bd55"></i>${T('loadP')}</span>`;
-  if(has('fpct'))lg+=`<span><i class="legend-dot" style="background:#e9edf3"></i>${T('freqP')}</span>`;
   lg+=`<span><i class="legend-dot" style="background:#72aaff"></i>${T('fanN',1)}</span><span><i class="legend-dot" style="background:#d49aff"></i>${T('fanN',2)}</span>`;
   set('combinedLegend',lg);
 }
@@ -971,8 +1038,11 @@ function drawThermal(points,lim){
   timeAxis(x,points,L,R,W,T0+ph,dpr);
   const lbl=[];
   const ref=(v,color,label)=>{if(v==null)return;const y=Y(v);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle=color;x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();lbl.push({y,color,label})};
+  if(lim.laser_shutdown!=null&&lim.laser_derate!=null&&Math.abs(lim.laser_shutdown-lim.laser_derate)<=1.5){
+    const ll=T('lasersLim');ref(lim.laser_derate,'#ff9f43',ll[0]);lbl.push({y:Y(lim.laser_derate)+0.01,color:'#f16b68',label:ll[1](lim.laser_derate,lim.laser_shutdown)});const y=Y(lim.laser_shutdown);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle='#f16b68';x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();
+  }else{
   ref(lim.laser_shutdown,'#f16b68',T('lOff',lim.laser_shutdown));
-  ref(lim.laser_derate,'#ff9f43',T('lDim',lim.laser_derate));
+  ref(lim.laser_derate,'#ff9f43',T('lDim',lim.laser_derate));}
   ref(lim.dmd_shutdown,'#f2bd55',T('dOff',lim.dmd_shutdown));
   const tg=pidTargets(lim);if(tg.length)ref(tg[0],'#8b93a1',T('fTgt',tg[0]));
   lbl.sort((a,b)=>a.y-b.y);const gap=15*dpr;let prev=-1e9;
@@ -994,16 +1064,17 @@ function renderProtection(d){
     `<div class="threshold info"><b>${pt.length?pt[0]+' °C':'—'}</b><span>${T('pFan',pt.length>1?pt[pt.length-1]:null)}</span></div>`].join(''));
   set('protNote',`${T(l.from_firmware?'nFw':'nDef')} ${T(l.dmd_source==='dlp'?'nDlp':'nNtc')} ${T('nPhoto')}`);
 }
+function errText(d){const c=d.error_code;if(c&&I18N.ru['e_'+c]!=null){const t=T('e_'+c,...(d.error_args||[]));return esc(t)+(c==='adb'||c==='service'?'<br><span class="muted">'+esc(d.error)+'</span>':'')}return esc(d.error)}
 function render(r){
   const d=r.latest||{};
-  if(d.error){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('offline');$('error').innerHTML=`<div class="error">${esc(d.error)}<br><span class="muted">${T(IS_APP?'errApp':'errDash')}</span></div>`;return}
+  if(d.error){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('offline');$('error').innerHTML=`<div class="error">${errText(d)}<br><span class="muted">${T(IS_APP?'errApp':'errDash')}</span></div>`;return}
   $('status').className='status';$('status').innerHTML='<i class="dot"></i>'+T('connected');$('error').innerHTML='';
   $('name').textContent=d.name||'JMGO';
   $('device').textContent=`${T('updated')} ${new Date(d.ts*1000).toLocaleTimeString(LANG==='ru'?'ru':'en-GB')}${d.uptime?' · '+T('uptime',Math.floor(d.uptime/3600),Math.floor(d.uptime%3600/60)):''}`;
   const th=d.thermal||{},lim=d.limits||{};
-  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':esc(t));$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
-  const parts=[];if(d.chip)parts.push(esc(d.chip));if(d.cpu_usage!=null&&d.cpu_usage>=0)parts.push(`${T('load')} ${d.cpu_usage}%`);if(d.freq)parts.push(`${d.freq} ${T('mhz')}`);
-  set('cpuSub',`${parts.join(' · ')}<br>${d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('cpuThrAt',thr)}`);
+  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':`${esc(t)}<span class="unit">°</span>`);$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
+  const hasLoad=d.cpu_usage!=null&&d.cpu_usage>=0;set('load',hasLoad?`${d.cpu_usage}<span class="unit">%</span>`:'');$('load').style.display=$('loadSep').style.display=hasLoad?'':'none';
+  set('cpuSub',`${esc(d.chip||'')}<br>${d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('cpuThrAt',thr)}`);
   const dm=th.dmd,dmM=dm!=null&&lim.dmd_shutdown?lim.dmd_shutdown-dm:null;
   set('dmd',dm==null?'—':fmt(dm));$('dmd').className='big '+margCls(dmM);
   set('dmdSub',dm==null?(th.age!=null?T('stale',th.age):T('waiting')):T('toOff',fmt(dmM),lim.dmd_shutdown));
@@ -1018,16 +1089,16 @@ function render(r){
   const mode=d.brightness_mode,fixed=FIXED_MODES.includes(mode);
   let big='—';
   if(fixed)big=T('brMax');
-  else if(d.brightness_pct!=null&&d.brightness_pct>=0){big=`${Math.round(d.brightness_pct/10)}<span class="unit"> / 10</span>`}
-  else if(d.brightness_menu!=null)big=`≈${d.brightness_menu}<span class="unit"> / 10</span>`;
+  else if(d.brightness_menu!=null)big=`${d.brightness_exact===false?'≈':''}${d.brightness_menu}<span class="unit"> / 10</span>`;
   set('brightness',big);
   const bs=[];const ml=(T('modes')||{})[mode];if(ml)bs.push(esc(ml));
+  if(!fixed&&d.brightness_actual!=null)bs.push(`<b style="color:var(--blue)">${T('alNow',d.brightness_actual)}</b>`);else if(!fixed&&d.al_enabled)bs.push(T('alOn'));
   if(d.bw_status===2&&mode!==22&&mode!==23)bs.push(T('bwWhite'));
   const pc=d.laser_current_pct;
   bs.push(pc?`${T('current')}: <b style="color:#ff6b6b">R ${pc[0]}%</b> · <b style="color:#5ee08a">G ${pc[1]}%</b> · <b style="color:#6fa8ff">B ${pc[2]}%</b>`:T('curNo'));
   set('brSub',bs.join('<br>'));
   set('freq',d.freq?unit(d.freq,T('mhz')):'—');$('freq').className='value'+(d.throttled?' hot':'');
-  set('freqHint',d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('freqHint',d.freq_hw||'—',d.cpu_usage>=0?d.cpu_usage:null));
+  set('freqHint',d.throttled?`<span class="thr">${T('thrCap',d.freq_cap)}</span>`:(d.freq_min&&d.freq_hw&&d.freq_min>=d.freq_hw?T('freqFixed'):T('freqHint',d.freq_hw||'—',d.cpu_usage>=0?d.cpu_usage:null)));
   const used=d.mem_total&&d.mem_avail?Math.round((d.mem_total-d.mem_avail)/d.mem_total*100):null;
   set('memory',used==null?'—':`${used}<span class="unit"> %</span>`);set('memoryHint',used==null?'':T('memHint',Math.round((d.mem_total-d.mem_avail)/1024),Math.round(d.mem_total/1024)));
   set('storage',d.storage_free_kb==null?'—':`${(d.storage_free_kb/1048576).toFixed(1)} ${T('gb')}`);
@@ -1098,26 +1169,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description=f"JMGO Temp {VERSION}: монитор температур JMGO по ADB (только чтение).")
+    R = CONSOLE_RU
+    ap = argparse.ArgumentParser(description=f"JMGO Temp {VERSION}: " + ("монитор температур JMGO по ADB (только чтение)." if R
+                                 else "JMGO projector temperature monitor over ADB (read-only)."))
     ap.add_argument("--version", action="version", version=f"JMGO Temp (jmgo_dash.py) {VERSION}")
-    ap.add_argument("target", nargs="?", default="", help="IP:порт беспроводной отладки (необязательно)")
-    ap.add_argument("--port", type=int, default=PORT, help="порт веб-страницы (по умолчанию 8777)")
-    ap.add_argument("--no-browser", action="store_true", help="не открывать браузер автоматически")
+    ap.add_argument("target", nargs="?", default="", help="IP:порт беспроводной отладки (необязательно)" if R
+                    else "wireless debugging IP:port (optional)")
+    ap.add_argument("--port", type=int, default=PORT, help="порт веб-страницы (по умолчанию 8777)" if R
+                    else "web page port (default 8777)")
+    ap.add_argument("--no-browser", action="store_true", help="не открывать браузер автоматически" if R
+                    else "do not open the browser automatically")
     args = ap.parse_args()
     TARGET = args.target.strip()
     PORT = args.port
-    print(f"JMGO Temp {VERSION} (браузерная версия)", flush=True)
+    print(f"JMGO Temp {VERSION} " + ("(браузерная версия)" if R else "(browser version)"), flush=True)
     print(f"adb: {ADB}", flush=True)
     threading.Thread(target=poll, daemon=True).start()
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     try:
         server = socketserver.ThreadingTCPServer(("127.0.0.1", PORT), Handler)
     except OSError:
-        sys.exit(f"Порт {PORT} занят — возможно, дашборд уже запущен. Открой http://localhost:{PORT} "
-                 f"или запусти с другим портом: --port 8778")
+        sys.exit(f"Порт {PORT} занят — возможно, дашборд уже запущен. Откройте http://localhost:{PORT} "
+                 f"или запустите с другим портом: --port 8778" if R else
+                 f"Port {PORT} is busy — the dashboard may already be running. Open http://localhost:{PORT} "
+                 f"or start with another port: --port 8778")
     with server:
         url = f"http://localhost:{PORT}"
-        print(f"Дашборд: {url}   (Ctrl+C — стоп)", flush=True)
+        print((f"Дашборд: {url}   (Ctrl+C — стоп)" if R else f"Dashboard: {url}   (Ctrl+C to stop)"), flush=True)
         if not args.no_browser:
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         try:

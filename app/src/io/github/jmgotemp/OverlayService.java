@@ -60,7 +60,7 @@ public class OverlayService extends Service implements Monitor.Listener {
     public void onCreate() {
         super.onCreate();
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel("overlay", "Окно температур", NotificationManager.IMPORTANCE_MIN));
+        nm.createNotificationChannel(new NotificationChannel("overlay", ru() ? "Окно температур" : "Temperature overlay", NotificationManager.IMPORTANCE_MIN));
         Notification n = new Notification.Builder(this, "overlay")
                 .setContentTitle("JMGO Temp").setContentText("JMGO Temp v" + BuildInfo.version(this))
                 .setSmallIcon(android.R.drawable.stat_sys_warning).build();
@@ -175,8 +175,10 @@ public class OverlayService extends Service implements Monitor.Listener {
         boolean fixed = mode == 15 || mode == 16 || mode == 22 || mode == 23;
         add(sb, ru ? "  Яркость " : "  Brightness ", grey);
         if (fixed) add(sb, ru ? "макс." : "max", Color.WHITE);
-        else if (d.has("brightness_pct")) add(sb, Math.round(d.optInt("brightness_pct") / 10f) + "/10", Color.WHITE);
-        else if (d.has("brightness_menu")) add(sb, "≈" + d.optInt("brightness_menu") + "/10", Color.WHITE);
+        else if (d.has("brightness_menu")) {
+            add(sb, (d.optBoolean("brightness_exact", true) ? "" : "≈") + d.optInt("brightness_menu") + "/10", Color.WHITE);
+            if (d.has("brightness_actual")) add(sb, " (AL ≈" + d.optInt("brightness_actual") + ")", 0xFF72AAFF);
+        }
         else add(sb, "—", Color.WHITE);
         sb.append("\n");
         String rs = d.optString("input_rslt", "");
