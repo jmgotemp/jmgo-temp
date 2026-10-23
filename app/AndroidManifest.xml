@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Пакет com.jmgo.*: системный hippo не закрывает такие приложения (ни при переключении, ни при уходе в сон).
+     Классы остаются в io.github.jmgotemp. До 1.3 пакет был io.github.jmgotemp. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="io.github.jmgotemp"
-    android:versionCode="4"
-    android:versionName="1.2.1">
+    package="com.jmgo.jmgotemp"
+    android:versionCode="5"
+    android:versionName="1.3">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -17,7 +19,7 @@
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
 
         <activity
-            android:name=".MainActivity"
+            android:name="io.github.jmgotemp.MainActivity"
             android:exported="true"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation">
@@ -28,6 +30,6 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".OverlayService" android:exported="false" />
+        <service android:name="io.github.jmgotemp.OverlayService" android:exported="false" />
     </application>
 </manifest>

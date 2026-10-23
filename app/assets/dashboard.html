@@ -130,7 +130,7 @@ ru:{
  toOff:(m,l)=>`до отключения ${m} °C (порог ${l})`,toDim:(m,l)=>`до снижения яркости ${m} °C (порог ${l})`,
  stale:s=>`нет свежих данных (${s} с)`,waiting:'жду данные…',module:'модуль',
  fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p}&nbsp;% мощности${t!=null?` · автоматика держит лазеры около ${t}&nbsp;°C`:''}`,fanNo:'мощность — нет данных',
- brMax:'Макс.',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включён',
+ brMax:'Макс.',iris:'диафрагма',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включён',
  e_no_service:'Сервис jmgomiddle-01 не найден — это не проектор JMGO?',e_no_dlp:'DLP-сервис JMGO недоступен.',e_service:'Нет связи с сервисом JMGO.',
  e_connecting:'Подключение к проектору…',e_no_adb:'Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.',
  e_connect:t=>`Не удалось подключиться к ${t}. Проверьте IP:порт в настройках беспроводной отладки.`,
@@ -152,7 +152,7 @@ ru:{
  nFw:'Пороги — из прошивки этого проектора.',nDef:'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.',
  nDlp:'Температуру DMD отдаёт контроллер DLP (датчик в самой матрице), поэтому и порог выше.',nNtc:'Датчик DMD стоит рядом с матрицей, сами зеркала горячее.',
  nPhoto:'Чтобы следить за охлаждением, сфотографируйте экран после 30–60 мин фильма и сравните через несколько месяцев в тех же условиях: +5 °C и больше или заметно выше обороты — пора обслуживать.',
- aErr:'Сервис JMGO сообщает об ошибке (ERROR:true) — проверьте проектор.',aFan:'fanStatus = 0: система считает, что вентилятор не работает.',
+ aStop:(n,p)=>`Вентилятор ${n}: 0 об/мин${p!=null?` при мощности ${p} %`:''} — похоже, не крутится.`,
  aDmd:(v,l)=>`DMD близко к порогу отключения: ${v} из ${l} °C.`,aLas:(v,l)=>`Лазеры близко к порогу снижения яркости: ${v} из ${l} °C.`,
  aFans:(a,b)=>`Вентиляторы крутятся заметно по-разному (${a} и ${b} об/мин).`,aNoTh:'Пока нет данных о температуре DMD/лазеров — подождите 10–20 с.',
  aThr:(t,f)=>`Процессор троттлит с ${t}: частота ограничена до ${f} МГц.`
@@ -170,8 +170,8 @@ en:{
  thrNow:(since,f)=>`⚠ throttling since ${since}: capped at ${f} MHz`,
  toOff:(m,l)=>`${m} °C to shutdown (limit ${l})`,toDim:(m,l)=>`${m} °C to dimming (limit ${l})`,
  stale:s=>`no fresh data (${s} s)`,waiting:'waiting for data…',module:'module',
- fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}&nbsp;% power${t!=null?` · auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
- brMax:'Max',current:'laser current',curNo:'laser current unavailable',alNow:n=>`AL 2.0: now ≈${n}/10 by current`,alOn:'AL 2.0 on',
+ fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}% power${t!=null?` · auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
+ brMax:'Max',iris:'aperture',current:'laser current',curNo:'laser current unavailable',alNow:n=>`AL 2.0: now ≈${n}/10 by current`,alOn:'AL 2.0 on',
  e_no_service:'Service jmgomiddle-01 not found — is this a JMGO projector?',e_no_dlp:'JMGO DLP service is unavailable.',e_service:'No connection to the JMGO service.',
  e_connecting:'Connecting to the projector…',e_no_adb:'adb not found. Put jmgo_dash.py into the platform-tools folder or install adb.',
  e_connect:t=>`Could not connect to ${t}. Check IP:port in the wireless debugging settings.`,
@@ -193,7 +193,7 @@ en:{
  nFw:'Limits are read from this projector\'s firmware.',nDef:'⚠ Limits not found in the firmware — N5 Pro values are shown.',
  nDlp:'DMD temperature comes from the DLP controller (sensor inside the chip), hence the higher limit.',nNtc:'The DMD sensor sits next to the chip; the mirrors themselves run hotter.',
  nPhoto:'To track cooling, photograph this screen after 30–60 min of a movie and compare a few months later under the same conditions: +5 °C or more, or noticeably higher fan speeds, means it\'s time for servicing.',
- aErr:'The JMGO service reports an error (ERROR:true) — check the projector.',aFan:'fanStatus = 0: the system thinks a fan has stopped.',
+ aStop:(n,p)=>`Fan ${n}: 0 rpm${p!=null?` at ${p}% power`:''} — it seems to be stopped.`,
  aDmd:(v,l)=>`DMD is close to the shutdown limit: ${v} of ${l} °C.`,aLas:(v,l)=>`Lasers are close to the dimming limit: ${v} of ${l} °C.`,
  aFans:(a,b)=>`Fans run at noticeably different speeds (${a} and ${b} rpm).`,aNoTh:'No DMD/laser temperature yet — wait 10–20 s.',
  aThr:(t,f)=>`CPU throttling since ${t}: frequency capped at ${f} MHz.`
@@ -310,7 +310,8 @@ function render(r){
   if(fixed)big=T('brMax');
   else if(d.brightness_menu!=null)big=`${d.brightness_exact===false?'≈':''}${d.brightness_menu}<span class="unit"> / 10</span>`;
   set('brightness',big);
-  const bs=[];const ml=(T('modes')||{})[mode];if(ml)bs.push(esc(ml));
+  const bs=[];const ml=(T('modes')||{})[mode];const ap=d.aperture>0?`${T('iris')} F${+(+d.aperture).toFixed(1)}`:'';
+  if(ml)bs.push(esc(ml)+(ap?' · '+ap:''));else if(ap)bs.push(ap);
   if(!fixed&&d.brightness_actual!=null)bs.push(`<b style="color:var(--blue)">${T('alNow',d.brightness_actual)}</b>`);else if(!fixed&&d.al_enabled)bs.push(T('alOn'));
   if(d.bw_status===2&&mode!==22&&mode!==23)bs.push(T('bwWhite'));
   const pc=d.laser_current_pct;
@@ -333,12 +334,13 @@ function render(r){
   const zones=d.extra_zones||[],gpu=zones.find(z=>/gpu/i.test(z.name)),apu=zones.find(z=>/apu|npu/i.test(z.name));
   set('gpuTemp',gpu?`${gpu.temp} °C`:'—');set('apuTemp',apu?`${apu.temp} °C`:'—');$('extraZoneCard').classList.toggle('visible',Boolean(gpu||apu));
   const al=[];
-  if(th.hippo_error)al.push(T('aErr'));
-  if(th.fan_status===0)al.push(T('aFan'));
   if(dmM!=null&&dmM<=6)al.push(T('aDmd',fmt(dm),lim.dmd_shutdown));
   if(lM!=null&&lM<=6)al.push(T('aLas',fmt(lm),lim.laser_derate));
   if(d.throttled)al.push(T('aThr',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap));
-  if(d.fan1!=null&&d.fan2!=null&&Math.max(d.fan1,d.fan2)>300&&Math.abs(d.fan1-d.fan2)/Math.max(d.fan1,d.fan2)>0.25)al.push(T('aFans',d.fan1,d.fan2));
+  // вентилятор стоит: 0 об/мин при поданной мощности > 30 % (одиночные сбойные нули отфильтрованы ещё при опросе)
+  const dmax=duty&&duty.length?Math.max(...duty):null;const stop=[d.fan1,d.fan2].map((v,i)=>v===0&&(dmax!=null?dmax>30:Math.max(d.fan1||0,d.fan2||0)>300)?i+1:0).filter(Boolean);
+  if(stop.length)stop.forEach(n=>al.push(T('aStop',n,dmax)));
+  else if(d.fan1!=null&&d.fan2!=null&&Math.max(d.fan1,d.fan2)>300&&Math.abs(d.fan1-d.fan2)/Math.max(d.fan1,d.fan2)>0.25)al.push(T('aFans',d.fan1,d.fan2));
   if(th.fresh===false&&th.age==null)al.push(T('aNoTh'));
   $('alert').innerHTML=al.length?`<div class="alert">${al.map(esc).join('<br>')}</div>`:'';
   renderProtection(d);
@@ -346,7 +348,7 @@ function render(r){
 }
 const CORN={tr:'↗',br:'↘',bl:'↙',tl:'↖'};
 function updOverlayBtn(){if(!IS_APP)return;try{const on=Android.overlayOn(),can=Android.canOverlay();const b=$('ovBtn');b.textContent=T('ovBtn',on);b.classList.toggle('on',on);$('cornerBtn').textContent=`${T('corner')}: ${CORN[Android.corner()]||'↗'}`;
- $('ovWarn').innerHTML=can?'':`<div class="alert">${T('ovWarn')}<br><b>adb shell appops set io.github.jmgotemp SYSTEM_ALERT_WINDOW allow</b></div>`}catch(e){}}
+ $('ovWarn').innerHTML=can?'':`<div class="alert">${T('ovWarn')}<br><b>adb shell appops set ${esc(typeof Android.pkg==='function'?Android.pkg():'io.github.jmgotemp')} SYSTEM_ALERT_WINDOW allow</b></div>`}catch(e){}}
 document.addEventListener('keydown',e=>{
   if(e.key==='ArrowDown'){window.scrollBy({top:260,behavior:'smooth'});e.preventDefault()}
   else if(e.key==='ArrowUp'){window.scrollBy({top:-260,behavior:'smooth'});e.preventDefault()}

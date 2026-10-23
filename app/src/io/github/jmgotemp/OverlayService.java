@@ -180,6 +180,10 @@ public class OverlayService extends Service implements Monitor.Listener {
             if (d.has("brightness_actual")) add(sb, " (AL ≈" + d.optInt("brightness_actual") + ")", 0xFF72AAFF);
         }
         else add(sb, "—", Color.WHITE);
+        if (d.has("aperture")) {
+            double a = d.optDouble("aperture");
+            add(sb, "  F" + (a == Math.floor(a) ? String.valueOf((int) a) : String.format(Locale.US, "%.1f", a)), Color.WHITE);
+        }
         sb.append("\n");
         String rs = d.optString("input_rslt", "");
         if (!rs.isEmpty() && !"null".equals(rs)) {

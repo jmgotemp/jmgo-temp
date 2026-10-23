@@ -41,7 +41,8 @@ public final class Monitor {
     private static final int T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
     private static final int IDX_TEMPS = 0x105, IDX_FAN_DUTY = 0xa7, IDX_FAN_STATUS = 0x76,
             IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334,
-            IDX_BRIGHTNESS_MODE = 0x64;
+            IDX_BRIGHTNESS_MODE = 0x64,
+            IDX_APERTURE = 0x213; // диафрагма: F × 100 (как в «Клоне настроек»); ≤ 0 — нет диафрагмы (N5 Pro)
 
     private static Monitor instance;
 
@@ -511,6 +512,8 @@ public final class Monitor {
         }
         // Ступени меню 1..10 сервис хранит как (N-1)*100/9: 0, 11, 22 … 88, 100 (так же строит BrightnessInterpolator в hippo)
         if (bPct != null && bPct >= 0) { s.put("brightness_menu", menuLevel(bPct)); s.put("brightness_exact", true); }
+        Integer ap = getInt(IDX_APERTURE);
+        if (ap != null && ap > 0) s.put("aperture", ap / 100.0);
         int modeNow = s.optInt("brightness_mode", -1);
         boolean fixedMode = modeNow == 15 || modeNow == 16 || modeNow == 22 || modeNow == 23;
         Integer curLevel = null;

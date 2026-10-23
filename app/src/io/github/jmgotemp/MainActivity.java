@@ -35,7 +35,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
 
-    /** am start -n io.github.jmgotemp/.MainActivity --es overlay on|off  — включить/выключить окно без пульта. */
+    /** am start -n <пакет>/io.github.jmgotemp.MainActivity --es overlay on|off  — включить/выключить окно без пульта.
+     *  Пакет с 1.3: com.jmgo.jmgotemp (hippo не закрывает приложения com.jmgo.*), до 1.3: io.github.jmgotemp. */
     private void handleIntent(Intent i) {
         if (i == null || !i.hasExtra("overlay")) return;
         boolean on = "on".equals(i.getStringExtra("overlay"));
@@ -66,6 +67,8 @@ public class MainActivity extends Activity {
             try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
             catch (Exception e) { return ""; }
         }
+
+        @JavascriptInterface public String pkg() { return getPackageName(); }
 
         @JavascriptInterface public String getLang() { return prefs().getString("lang", ""); }
 
