@@ -29,7 +29,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Маленькое окно поверх фильма. Не перехватывает пульт и касания.
+ * Компактный режим: маленькое окно поверх фильма. Не перехватывает пульт и касания.
  * Строка 1: DMD и самый горячий лазер (цвет = запас до порога защиты).
  * Строка 2: мощность вентиляторов и уровень яркости.
  */
@@ -60,7 +60,7 @@ public class OverlayService extends Service implements Monitor.Listener {
     public void onCreate() {
         super.onCreate();
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel("overlay", ru() ? "Окно температур" : "Temperature overlay", NotificationManager.IMPORTANCE_MIN));
+        nm.createNotificationChannel(new NotificationChannel("overlay", ru() ? "Компактный режим" : "Compact mode", NotificationManager.IMPORTANCE_MIN));
         Notification n = new Notification.Builder(this, "overlay")
                 .setContentTitle("JMGO Temp").setContentText("JMGO Temp v" + BuildInfo.version(this))
                 .setSmallIcon(android.R.drawable.stat_sys_warning).build();
@@ -119,7 +119,7 @@ public class OverlayService extends Service implements Monitor.Listener {
     }
 
     private static int colorFor(Double v, double limit) {
-        if (v == null) return Color.WHITE;
+        if (v == null || Double.isNaN(limit)) return Color.WHITE;
         double m = limit - v;
         return m <= 2 ? 0xFFF16B68 : m <= 6 ? 0xFFF2BD55 : 0xFF7BE495;
     }
@@ -153,9 +153,9 @@ public class OverlayService extends Service implements Monitor.Listener {
         Double lm = th.isNull("laser_max") ? null : th.optDouble("laser_max");
         int grey = 0xFFA3AAB6;
         add(sb, "DMD ", grey);
-        add(sb, dmd == null ? "—" : String.format(Locale.US, "%.1f°", dmd), colorFor(dmd, lim.optDouble("dmd_shutdown", 55)));
+        add(sb, dmd == null ? "—" : String.format(Locale.US, "%.1f°", dmd), colorFor(dmd, lim.optDouble("dmd_shutdown", Double.NaN)));
         add(sb, ru ? "  Лазер " : "  Laser ", grey);
-        add(sb, lm == null ? "—" : String.format(Locale.US, "%.1f°", lm), colorFor(lm, lim.optDouble("laser_derate", 56.5)));
+        add(sb, lm == null ? "—" : String.format(Locale.US, "%.1f°", lm), colorFor(lm, lim.optDouble("laser_derate", Double.NaN)));
         // процессор: температура, при троттлинге — предупреждение (загрузка только на дашборде)
         if (d.has("temp")) {
             int cpu = d.optInt("temp");

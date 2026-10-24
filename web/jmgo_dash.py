@@ -10,7 +10,7 @@
 
 Нужны Python 3.9+ и adb (Android platform-tools). adb ищется в PATH или рядом со скриптом
 (можно просто положить jmgo_dash.py в распакованную папку platform-tools).
-IP:порт необязателен: скрипт возьмёт уже подключённый проектор или найдёт его в сети сам.
+IP:порт необязателен: скрипт возьмет уже подключенный проектор или найдет его в сети сам.
 
 Что показывает:
   * температуру матрицы DMD и лазерных модулей — их измеряет системный сервис JMGO
@@ -28,6 +28,7 @@ import argparse
 import collections
 import http.server
 import json
+import math
 import os
 import re
 import shutil
@@ -63,7 +64,7 @@ def find_adb() -> str:
     return "adb"
 
 
-VERSION = "1.3"  # та же нумерация, что у APK JMGO Temp
+VERSION = "1.4"  # та же нумерация, что у APK JMGO Temp
 
 ADB = find_adb()
 TARGET = ""  # IP:порт из командной строки (необязательно)
@@ -96,6 +97,13 @@ THERMAL_FRESH_S = 40  # если дольше нет строк от hippo — �
 
 # Индексы датчиков в hippo: 7 — DMD, 10/11/12/14 — лазерные модули 1..4
 LASER_INDEX = {10: 0, 11: 1, 12: 2, 14: 3}
+# Коды, у которых название известно точно: N5 — проверено на проекторах, остальные — Google Play / FCC.
+MODEL_NAMES = {
+    "K981CN": "JMGO N5 Pro", "KD11CN": "JMGO N5S Ultra Max", "KD11AX": "JMGO IRIS Ultra Max",
+    "K931AO": "JMGO N3 Ultimate", "S70A": "JMGO N1", "H80A": "JMGO N1 Pro",
+    "K92A": "JMGO N1S Infinity", "K93A": "JMGO N1S Pro", "K610AO": "JMGO N1S SE",
+    "T91A": "JMGO O2S Ultra", "m7642_JmGO_H79P": "JMGO O1", "m7642_JmGO_T72A": "JMGO O1 Pro",
+}
 DMD_INDEX = 7
 
 # Запасные пороги (сняты с прошивки N5 Pro K981CN 1.1.31.23), если конфиг прочитать не удалось
@@ -115,6 +123,7 @@ REMOTE_SCRIPT = r'''#!/system/bin/sh
 val() { cat "$1" 2>/dev/null || true; }
 echo "model=$(getprop ro.product.model)"
 echo "jmodel=$(getprop ro.boot.jmgo.model)"
+echo "device=$(getprop ro.product.device)"
 echo "name=$(settings get global device_name 2>/dev/null)"
 echo "platform=$(getprop ro.board.platform)"
 echo "android=$(getprop ro.build.version.release)"
@@ -153,6 +162,11 @@ echo "picture_backlight=$(settings get global picture_backlight 2>/dev/null)"
 echo "picture_mode=$(settings get global picture_mode 2>/dev/null)"
 echo "dynamic_black=$(settings get system dynamic_black_enabled 2>/dev/null)"
 echo "motor_positions=$(settings list system 2>/dev/null | grep '^motor_position_' | tr '\n' ' ')"
+# сырые отсчеты встроенного АЦП: по ним hippo считает температуру объектива (TEMPERATURE_LENS_CHANNEL_MUX)
+for f in /sys/bus/iio/devices/iio:device*/name; do
+  [ "$(cat "$f" 2>/dev/null)" = "1c020a00.saradc" ] || continue
+  d=${f%/name}; echo "saradc=$(for i in 0 1 2 3 4 5 6 7 8 9; do cat "$d/in_voltage${i}_raw" 2>/dev/null || echo -; done | tr '\n' ' ')"
+done
 echo "uptime=$(cut -d. -f1 /proc/uptime)"
 echo "loadavg=$(cat /proc/loadavg)"
 CPU1=$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
@@ -167,19 +181,64 @@ echo "mem_total=$(awk '/MemTotal/{print $2}' /proc/meminfo)"
 echo "mem_available=$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
 '''
 
-# Достаём конфиг hippo для своей модели прямо из APK на проекторе (только чтение).
+# Достаем конфиг hippo для своей модели прямо из APK на проекторе (только чтение).
+# Как сам hippo: общий assets/hippo_configs.xml + assets/<папка>/hippo_configs.xml + уточнения
+# -device-/-model-/-hw- (Build.DEVICE, ro.boot.dlpModel, ro.boot.hardware_version). Папка — ro.jmgo.product.device,
+# затем ro.product.device и код модели (на N3/N1S папка не совпадает с ro.boot.jmgo.model).
 CONFIG_SCRIPT = r'''#!/system/bin/sh
 A=$(pm path com.jmgo.hippo 2>/dev/null | head -1 | cut -d: -f2)
-M=$(getprop ro.boot.jmgo.model); [ -z "$M" ] && M=$(getprop ro.product.model)
 echo "APK=$A"
-echo "MODEL=$M"
-F="assets/$M/hippo_configs.xml"
-if [ -n "$A" ] && unzip -l "$A" 2>/dev/null | grep -q " $F\$"; then
-  echo "FILE=$F"
-  echo "-----BEGIN-----"
-  unzip -p "$A" "$F"
-fi
+[ -z "$A" ] && exit 0
+L=$(unzip -l "$A" 2>/dev/null | awk '{print $4}' | grep '^assets/.*hippo_configs[^/]*\.xml$')
+D=""
+for c in "$(getprop ro.jmgo.product.device)" "$(getprop ro.product.device)" "$(getprop ro.boot.jmgo.model)" "$(getprop ro.product.model)"; do
+  [ -n "$c" ] && echo "$L" | grep -qx "assets/$c/hippo_configs.xml" && { D=$c; break; }
+done
+echo "DIR=$D"
+echo "DEVICE=$(getprop ro.product.device)"
+echo "DLPMODEL=$(getprop ro.boot.dlpModel)"
+echo "HW=$(getprop ro.boot.hardware_version)"
+[ -z "$D" ] && exit 0
+for f in assets/hippo_configs.xml $(echo "$L" | grep "^assets/$D/"); do
+  echo "-----FILE $f-----"
+  unzip -p "$A" "$f"
+done
 '''
+
+_ELEM = re.compile(r'<(setting(?:-array|-2-dimen-array)?)\s[^>]*?key="([^"]+)"[^>]*?(?:/>|>.*?</\1\s*>)', re.S)
+
+
+def merge_hippo_configs(raw: str) -> tuple[str, str]:
+    """Склеивает файлы из CONFIG_SCRIPT в порядке hippo (XmlParser.parseAssetsConfigXml): общий,
+    папка модели, затем -device-/-model-/-hw-, если их токен совпал. Возвращает (xml, «K931CN + hw-6»)."""
+    head, _, rest = raw.partition("-----FILE ")
+    info = dict(l.split("=", 1) for l in head.splitlines() if "=" in l)
+    d = info.get("DIR", "").strip()
+    files: dict[str, str] = {}
+    for chunk in ("-----FILE " + rest).split("-----FILE ")[1:]:
+        name, _, body = chunk.partition("-----\n")
+        files[name.strip()] = body
+    if not d or f"assets/{d}/hippo_configs.xml" not in files:
+        return "", ""
+    order = ["assets/hippo_configs.xml", f"assets/{d}/hippo_configs.xml"]
+    extra = sorted(n for n in files if n.startswith(f"assets/{d}/hippo_configs") and n not in order)
+    used = [d]
+    for kind, want in (("-device-", info.get("DEVICE", "")), ("-model-", info.get("DLPMODEL", "")),
+                       ("-hw-", info.get("HW", ""))):
+        want = want.strip()
+        if not want:
+            continue
+        for n in extra:
+            f = n.rsplit("/", 1)[-1]
+            if kind in f and want in re.split(r"[-.]", f):
+                order.append(n)
+                used.append(f[len("hippo_configs-"):-4])
+    merged: dict[str, str] = {}
+    for n in order:
+        body = re.sub(r"<!--.*?-->", "", files.get(n, ""), flags=re.S)
+        for m in _ELEM.finditer(body):
+            merged[m.group(2)] = m.group(0)
+    return "\n".join(merged.values()), " + ".join(used)
 
 
 def run(cmd: list[str], timeout: float = 15, stdin: str | None = None) -> str:
@@ -232,7 +291,7 @@ def discover_device() -> str:
 
 
 def adb_shell(serial: str, script: str = REMOTE_SCRIPT, timeout: float = 20) -> str:
-    # Скрипт отдаём через stdin (`sh -s`): одинаково работает на macOS и Windows.
+    # Скрипт отдаем через stdin (`sh -s`): одинаково работает на macOS и Windows.
     return run([ADB, "-s", serial, "shell", "sh", "-s"], timeout=timeout, stdin=script)
 
 
@@ -263,12 +322,14 @@ def _float_list(xml: str, key: str) -> list[float]:
 def parse_hippo_config(xml: str, file_name: str) -> dict:
     xml = re.sub(r"<!--.*?-->", "", xml, flags=re.S)  # в комментариях лежат старые/примерные значения
     limits = dict(DEFAULT_LIMITS)
-    m = re.search(r"assets/([^/]+)/", file_name)
-    limits["source"] = f"из прошивки этого проектора ({m.group(1) if m else file_name})"
+    limits["source"] = f"из прошивки этого проектора ({file_name})"
+    limits["config"] = file_name
     limits["from_firmware"] = True
     check = _float_rows(xml, "SYSTEM_CHECK_TEMPERATURE_CONFIG")
     sensors = []
     laser_shut, laser_derate = [], []
+    has_dmd = False
+    laser_idx: set[int] = set()
     for row in check:
         if len(row) < 2:
             continue
@@ -277,14 +338,25 @@ def parse_hippo_config(xml: str, file_name: str) -> dict:
         sensors.append({"index": idx, "shutdown": shutdown, "derate": derate})
         if idx == DMD_INDEX:
             limits["dmd_shutdown"] = shutdown
+            has_dmd = True
         elif idx in LASER_INDEX:
+            laser_idx.add(idx)
             laser_shut.append(shutdown)
             if derate:
                 laser_derate.append(derate)
+    # нет датчика в самопроверке модели — нет и порога (не подставляем значения N5 Pro)
+    if not has_dmd:
+        limits.pop("dmd_shutdown", None)
     if laser_shut:
         limits["laser_shutdown"] = min(laser_shut)
+    else:
+        limits.pop("laser_shutdown", None)
     if laser_derate:
         limits["laser_derate"] = min(laser_derate)
+    else:
+        limits.pop("laser_derate", None)
+    laser_idx.update(int(v) for v in _float_list(xml, "INTELLIGENT_FAN_CONTROL") if int(v) in LASER_INDEX)
+    limits["_laser_modules"] = sorted(LASER_INDEX[i] for i in laser_idx)
     limits["sensors"] = sensors
     pid = _float_rows(xml, "FAN_PID_CONTROL_CONFIG")
     if pid:
@@ -306,13 +378,40 @@ def parse_hippo_config(xml: str, file_name: str) -> dict:
     limits["_dmd_dlp_cfg"] = _float_list(xml, "DMD_TEMPERATURE_CHECK_CONFIG")
     # Диафрагма (N5S Ultra Max): ступени {F, положение мотора}; hippo хранит положение мотора
     # в Settings.System motor_position_<имя>, имя — MOTOR_DEVICE_NAME_CONFIG[DISPLAY_BRIGHTNESS_APERTURE_ID].
-    limits["_aperture_gears"] = [(r[0], r[1]) for r in _float_rows(xml, "DISPLAY_APERTURE_GEAR_CONFIG") if len(r) >= 2]
+    # в общем файле hippo таблица-заглушка с положением -1: у модели без своей таблицы диафрагму не показываем
+    limits["_aperture_gears"] = [(r[0], r[1]) for r in _float_rows(xml, "DISPLAY_APERTURE_GEAR_CONFIG") if len(r) >= 2 and r[1] >= 0]
     m = re.search(r'key="MOTOR_DEVICE_NAME_CONFIG"[^>]*>(.*?)</setting-array>', xml, re.S)
     names = re.findall(r"<item>\s*([^<\s]+)\s*</item>", m.group(1)) if m else []
     aid = _float_list(xml, "DISPLAY_BRIGHTNESS_APERTURE_ID")
     if aid and 0 <= int(aid[0]) < len(names):
         limits["_aperture_motor"] = names[int(aid[0])]
+    # Объектив: {канал АЦП, R, B, mux, делитель} на встроенном АЦП (SAR_IIO_DEVICE); на N5 Pro/UM/Iris так и настроено
+    lens = _float_list(xml, "TEMPERATURE_LENS_CHANNEL_MUX")
+    m = re.search(r'key="SAR_IIO_DEVICE"[^>]*value="([^"]*)"', xml)
+    if len(lens) >= 5 and lens[0] >= 0 and m and m.group(1):
+        limits["_lens_mux"] = lens[:5]
+        acc = _float_list(xml, "SAR_ADC_LEVEL_ACCURATE_MODE")
+        limits["_adc_max"] = 1024 if acc and acc[0] == 1 else 255
     return limits
+
+
+def lens_temperature(limits: dict, saradc: str) -> float | None:
+    """Как TemperaturePolicy.getSarAdcTemperature в hippo: NTC (R, B) через делитель на 3,3 В."""
+    mux = limits.get("_lens_mux")
+    if not mux:
+        return None
+    vals = (saradc or "").split()
+    ch, r0, beta, _, div = (int(v) for v in mux)
+    try:
+        level = int(vals[ch])
+    except (IndexError, ValueError):
+        return None
+    v = level / limits.get("_adc_max", 1024) * 3.3
+    if not 0 < v < 3.3:
+        return None
+    r = div * v / (3.3 - v) / r0
+    t = 1 / (math.log(r) / beta + 0.00335402) - 273.15
+    return round(t, 1) if -40 < t < 150 else None
 
 
 def aperture_gear(limits: dict, positions: str) -> float | None:
@@ -338,7 +437,10 @@ def dlp_version_int(text: str) -> int:
 
 
 def dmd_by_dlp(mux: list, dlp_version: str) -> bool:
-    """Повторяет TemperaturePolicy.isDmdTemperatureByDlp() из hippo."""
+    """Повторяет TemperaturePolicy.getDMDTemperature()/isDmdTemperatureByDlp() из hippo.
+    sar −2 (Iris Ultra/Ultra Max, hippo 9.4.x): DMD всегда из DLP, без проверки версии."""
+    if mux and mux[0] == -2:
+        return True
     if not mux or mux[0] < 0:
         return False
     if len(mux) >= 7 and mux[6] > 0:
@@ -357,14 +459,10 @@ def get_limits(serial: str) -> dict:
     limits = dict(DEFAULT_LIMITS)
     limits["_ok"] = False
     try:
-        raw = adb_shell(serial, CONFIG_SCRIPT, timeout=30)
-        head, _, xml = raw.partition("-----BEGIN-----")
-        file_name = ""
-        for line in head.splitlines():
-            if line.startswith("FILE="):
-                file_name = line[5:].strip()
+        raw = adb_shell(serial, CONFIG_SCRIPT, timeout=40)
+        xml, cfg_name = merge_hippo_configs(raw)
         if xml.strip():
-            limits = parse_hippo_config(xml, file_name)
+            limits = parse_hippo_config(xml, cfg_name)
             limits["_ok"] = True
     except Exception as exc:  # noqa: BLE001 — оставляем пороги по умолчанию
         limits["config_error"] = str(exc)
@@ -586,11 +684,8 @@ def parse_snapshot(serial: str) -> dict:
     display_match = re.search(r"real (\d+) x (\d+)", display_info)
     refresh_match = re.search(r"modes \[\{[^]]*?fps=([0-9.]+)", display_info)
 
-    model_names = {
-        "K981CN": "JMGO N5 Pro",
-        "KD11CN": "JMGO N5S Ultra Max",
-    }
-    friendly_name = model_names.get(model, friendly_name)
+    friendly_name = next((MODEL_NAMES[c] for c in (model, data.get("model", ""), data.get("device", ""))
+                          if c in MODEL_NAMES), friendly_name)
 
     return {
         "serial": serial,
@@ -633,6 +728,7 @@ def parse_snapshot(serial: str) -> dict:
         "picture_mode": data.get("picture_mode", ""),
         "dynamic_black": integer("dynamic_black", -1),
         "motor_positions": data.get("motor_positions", ""),
+        "saradc": data.get("saradc", ""),
         "uptime": integer("uptime"),
         "load_1m": load_1m,
         "cpu_usage": integer("cpu_usage", -1),
@@ -657,7 +753,8 @@ def enrich(snapshot: dict, limits: dict) -> None:
         th = dict(THERMAL)
     age = time.time() - th["recv_ts"] if "recv_ts" in th else None
     fresh = age is not None and age < THERMAL_FRESH_S
-    lasers = [th.get(f"laser{i}") for i in range(4)]
+    mods = limits.get("_laser_modules") or range(4)  # 3-лазерные модели: лишний модуль не показываем
+    lasers = [th.get(f"laser{i}") for i in mods]
     lasers = [v for v in lasers if v is not None]
     thermal = {
         "fresh": fresh,
@@ -665,6 +762,7 @@ def enrich(snapshot: dict, limits: dict) -> None:
         "dmd": th.get("dmd") if fresh else None,
         "lasers": lasers if fresh else [],
         "laser_max": max(lasers) if fresh and lasers else None,
+        "lens": lens_temperature(limits, snapshot.pop("saradc", "")),
         "pid_temp": th.get("pid_temp") if fresh else None,
         "fan_duty": th.get("fan_duty") if fresh else None,
         "fan_mode": th.get("fan_mode"),
@@ -676,9 +774,12 @@ def enrich(snapshot: dict, limits: dict) -> None:
     public_limits = {k: v for k, v in limits.items() if not k.startswith("_")}
     public_limits["dmd_source"] = "ntc"
     cfg = limits.get("_dmd_dlp_cfg") or []
-    if cfg and cfg[0] > 0 and dmd_by_dlp(limits.get("_dmd_mux") or [], snapshot.get("dlp_version", "")):
-        public_limits["dmd_shutdown"] = cfg[0]
+    by_dlp = dmd_by_dlp(limits.get("_dmd_mux") or [], snapshot.get("dlp_version", ""))
+    if by_dlp:
+        # KD11CN: свой порог DMD_TEMPERATURE_CHECK_CONFIG; KD11AX: его нет, порог уже в строке {7, 71, -1}
         public_limits["dmd_source"] = "dlp"
+    if by_dlp and cfg and cfg[0] > 0:
+        public_limits["dmd_shutdown"] = cfg[0]
         if len(cfg) > 1 and cfg[1] > 0:
             public_limits["dmd_derate"] = cfg[1]
     snapshot["limits"] = public_limits
@@ -688,7 +789,7 @@ def enrich(snapshot: dict, limits: dict) -> None:
     snapshot["laser_current"] = cur
     snapshot["laser_current_pct"] = [round(c * 100 / (vmax[i] or 1023)) for i, c in enumerate(cur)] if cur else None
     # Яркость из меню хранится в настройке (0–100). Фиксированные режимы (Overlap, производительность,
-    # белый экран) узнаём по точному совпадению тока лазеров с таблицей BRIGHTNESS_VALUE из прошивки.
+    # белый экран) узнаем по точному совпадению тока лазеров с таблицей BRIGHTNESS_VALUE из прошивки.
     mode = -1
     if cur:
         for row in limits.get("mode_currents", []):
@@ -821,11 +922,13 @@ h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .muted{color:var(--muted)}
 .head{display:flex;justify-content:space-between;gap:18px;align-items:center}
 .ttl{display:flex;align-items:baseline;gap:1.2vw;min-width:0}
-.device{color:var(--muted);font-size:1.5vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand{display:inline-flex;align-items:center;gap:.5vw;align-self:center;color:var(--muted);font-size:1.9vh;font-weight:600;white-space:nowrap}.brand svg{height:3.2vh;width:3.2vh;flex:none}
+html.narrow .brand b{display:none}
+.device{color:var(--muted);font-size:1.5vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.device{display:none}
 .hdr-right{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .btn{background:var(--panel2);color:var(--text);border:2px solid var(--line);border-radius:10px;padding:.6vh 1vw;font:inherit;font-size:1.6vh;cursor:pointer}
 .btn:focus{outline:none;border-color:var(--blue);background:#24304a}.btn.on{border-color:var(--green)}
-.status{white-space:nowrap;color:var(--green);font-size:1.5vh}.status.off{color:var(--red)}
+.status{white-space:nowrap;color:var(--green);font-size:1.5vh}.status.off{color:var(--red)}.is-app .status:not(.off){display:none}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor;margin-right:7px}
 .error,.alert{padding:.8vh 1vw;border-radius:12px;font-size:1.5vh}
 .error{background:#321b1e;border:1px solid #7a373d;color:#ffb4b1}
@@ -834,6 +937,7 @@ h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .metric .label{color:var(--muted);font-size:1.45vh;margin-bottom:.4vh}
 .metric .big{font-size:5vh;line-height:1;font-weight:700;letter-spacing:-.04em}
 .metric .value{font-size:2.7vh;font-weight:650}
+#brightness{font-size:6.6vh}#brightness.dense{font-size:5vh}
 .metric .unit{font-size:.5em;color:var(--muted);font-weight:400;letter-spacing:0}
 .metric .hint,.metric-sub{font-size:1.35vh;color:var(--muted);margin-top:.4vh}
 .big.warn,.value.warn,b.warn{color:var(--yellow)}.big.hot,.value.hot,b.hot{color:var(--red)}
@@ -841,31 +945,54 @@ h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .version-line,.zone-line{display:flex;justify-content:space-between;gap:8px;font-size:1.4vh;margin-top:.2vh}
 .version-line span,.zone-line span{color:var(--muted)}
 .version-line b,.zone-line b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dmd-grid{display:grid;grid-template-columns:auto auto;justify-content:space-between;column-gap:1vw;align-items:baseline}
+.dmd-grid>:nth-child(1){grid-area:1/1}.dmd-grid>:nth-child(2){grid-area:1/2}.dmd-grid>:nth-child(3){grid-area:2/1}.dmd-grid>:nth-child(4){grid-area:2/2}
+.metric.xl .big{font-size:6.6vh}.metric.xl .metric-sub{font-size:1.6vh;margin-top:.8vh}.metric.xl .cpu-pair .sep{font-size:4.6vh}
+.dmd-grid:not(.has-lens) .lens-x{display:none}
 .ultra-extra{display:none}.ultra-extra.visible{display:block}
 .cpu-pair{display:flex;align-items:baseline;gap:1vw}.cpu-pair .sep{color:var(--line);font-size:3.6vh;font-weight:300}
 .fan-pair{display:flex;gap:8px}.fan-item{flex:1;min-width:0;text-align:center}
-.fan-value{font-size:3.6vh;font-weight:650;font-variant-numeric:tabular-nums}.fan-name{font-size:1.25vh;color:var(--muted);white-space:nowrap}
+.fan-value{font-size:5vh;line-height:1.1;font-weight:650;font-variant-numeric:tabular-nums}.fan-name{font-size:1.25vh;color:var(--muted);white-space:nowrap}
 .laser-row{display:flex;gap:6px;margin-top:.6vh}
 .laser-chip{flex:1;background:var(--panel2);border-radius:7px;padding:.3vh 0;text-align:center;font-size:1.5vh;font-variant-numeric:tabular-nums}
 .laser-chip small{display:block;color:var(--muted);font-size:1.1vh}
 .bar{height:.6vh;background:var(--panel2);border-radius:5px;overflow:hidden;margin-top:.7vh}
 .bar i{display:block;height:100%;background:var(--green);border-radius:5px;width:0;transition:width .4s,background .4s}.bar i.warn{background:var(--yellow)}.bar i.hot{background:var(--red)}
 .kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.8vw}
-.charts{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);grid-template-rows:minmax(0,1fr);gap:.8vw}
+.charts{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:.8vw}
 .chart{background:var(--panel);border:1px solid var(--line);display:flex;flex-direction:column;min-height:0;padding:1vh 1vw;border-radius:1vh}
 .chart-title{font-weight:600;font-size:1.6vh;margin-bottom:.4vh}.chart-sub{font-weight:400;color:var(--muted);font-size:.85em}
 .chart canvas{display:block;width:100%;flex:1;min-height:0}
 .chart-legend{display:flex;justify-content:center;gap:15px;flex-wrap:wrap;color:var(--muted);font-size:1.3vh;margin-top:.3vh}
 .legend-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
 .infos{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:.8vw}.infos .metric{padding:.9vh .9vw}
-#output{font-size:2.4vh;white-space:nowrap}#output .unit{display:block;font-size:1.4vh;white-space:nowrap}
-.prot{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:.8vw;align-items:center}
-.protection{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.6vw}
+.infos .metric .value{font-size:3.4vh}.infos .metric .hint{font-size:1.55vh}
+#output{font-size:2.9vh;white-space:nowrap}#output .unit{display:block;font-size:1.55vh;white-space:nowrap}
+.prot{display:block}
 .threshold{background:var(--panel);border:1px solid var(--line);padding:.7vh .8vw;border-radius:1vh}
 .threshold b{display:block;font-size:2vh}.threshold span{display:block;color:var(--muted);font-size:1.25vh;line-height:1.25}
 .threshold.hot b{color:var(--yellow)}.threshold.critical b{color:var(--red)}.threshold.info b{color:var(--blue)}
 .note{color:var(--muted);font-size:1.3vh;line-height:1.35}
 .app-only{display:none}.is-app .app-only{display:inline-block}
+.btn.don{color:var(--orange);border-color:#6b4a26}.btn.don:focus{color:var(--orange);border-color:var(--blue)}
+.btn .hrt{color:#ff4d5a}
+#donate{position:fixed;inset:0;background:#000000eb;display:none;align-items:center;justify-content:center;z-index:20}#donate.open{display:flex}
+.dn-box{background:var(--panel);border:1px solid var(--line);border-radius:2vh;padding:4vh 3vw;display:flex;gap:3vw;align-items:center;max-width:86vw}
+#warn{position:fixed;inset:0;z-index:20;visibility:hidden;background:transparent;transition:background .18s,visibility 0s .18s}#warn.open{visibility:visible;background:#0000005c;transition:background .18s}
+.wn-box{position:absolute;top:8vh;right:2vw;background:var(--panel);border:1px solid var(--line);border-radius:1.2vh;padding:1.3vh .9vw 1.2vh;width:max-content;box-shadow:0 1.6vh 5vh #000c;
+ transform-origin:var(--ox,90%) 0;opacity:0;transform:translateY(-1vh) scale(.94,.6);transition:opacity .18s,transform .18s cubic-bezier(.2,.8,.3,1)}
+#warn.open .wn-box{opacity:1;transform:none}
+.wn-box::before{content:'';position:absolute;top:-9px;right:var(--cx,60px);width:16px;height:16px;background:var(--panel);border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
+.wn-box p{margin:0 0 1vh;color:var(--muted);font-size:1.45vh;line-height:1.35;width:0;min-width:100%}
+.wn-row{display:flex;justify-content:flex-start;align-items:center;gap:.8vw;width:100%;text-align:left;margin:0 0 .5vh;padding:.55vh .7vw;font-size:1.65vh}
+.wn-row small{color:var(--muted);font-size:1.4vh;margin-left:.5vw}.wn-row.all{margin-bottom:1vh}
+.wn-row.on{border-color:var(--line)}.wn-row:focus{border-color:var(--blue)}
+.wn-row b{flex:none;min-width:3.6vw;text-align:center;border-radius:7px;padding:.2vh .5vw;font-size:1.55vh;background:#2b3038;color:var(--muted)}.wn-row.on b{background:#1f3a29;color:var(--green)}
+.wi{color:var(--yellow)}
+.wn-btns{display:flex;align-items:center;justify-content:space-between;gap:1.2vw;margin-top:.9vh}.wn-hint{color:var(--muted);font-size:1.35vh}
+.dn-qr{width:36vh;height:36vh;flex:none;background:#fff;border-radius:1vh}.dn-qr svg{width:100%;height:100%;display:block;shape-rendering:crispEdges}
+.dn-txt h2{margin:0 0 1.4vh;font-size:3.2vh}.dn-txt p{margin:0 0 1.6vh;color:var(--muted);font-size:2vh;line-height:1.4;max-width:44vw}
+.dn-url{font-size:2.8vh;font-weight:600;margin-bottom:2.4vh}.dn-url a{color:var(--text)}
 html.narrow,html.narrow body{height:auto}
 html.narrow body{overflow:auto;font-size:14px}
 html.narrow main{height:auto;padding:16px 18px;gap:12px}
@@ -873,8 +1000,9 @@ html.narrow h1{font-size:24px}
 html.narrow .device,html.narrow .status,html.narrow .btn{font-size:13px}
 html.narrow .metric .label,html.narrow .metric .hint,html.narrow .metric-sub,html.narrow .note,html.narrow .chart-legend,html.narrow .threshold span,html.narrow .zone-line,html.narrow .version-line{font-size:12px}
 html.narrow .metric .big{font-size:34px}
+html.narrow #brightness{font-size:44px}html.narrow .metric.xl .big{font-size:44px}html.narrow .metric.xl .metric-sub{font-size:13px}html.narrow #brightness.dense{font-size:34px}
 html.narrow .metric .value{font-size:20px}
-html.narrow .fan-value{font-size:26px}
+html.narrow .fan-value{font-size:30px}
 html.narrow .laser-chip{font-size:13px}
 html.narrow .laser-chip small{font-size:10px}
 html.narrow .chart-title{font-size:14px}
@@ -885,20 +1013,21 @@ html.narrow .kpis{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
 html.narrow .infos{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
 html.narrow .charts,html.narrow .prot{grid-template-columns:1fr}
 html.narrow .chart canvas{flex:none;height:260px}
-html.narrow .protection{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 </style>
 </head>
 <body><main>
-<div class="head"><div class="ttl"><h1 id="name">JMGO</h1><span class="device" id="device"></span></div>
+<div class="head"><div class="ttl"><span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="5" height="9" rx="1" fill="#F07070"/><rect x="9.5" y="4" width="5" height="16" rx="1" fill="#5DD879"/><rect x="16" y="13.5" width="5" height="6.5" rx="1" fill="#6AA8FF"/><rect x="2" y="21.2" width="20" height="1.4" rx=".7" fill="#8A93A3"/></svg><b>JMGO Temp</b></span><h1 id="name">JMGO</h1><span class="device" id="device"></span></div>
 <div class="hdr-right">
 <button id="ovBtn" class="btn app-only" onclick="Android.toggleOverlay();setTimeout(updOverlayBtn,400)"></button>
 <button id="cornerBtn" class="btn app-only" onclick="Android.cycleCorner();updOverlayBtn()"></button>
 <button id="langBtn" class="btn" onclick="toggleLang()">RU</button>
+<button id="warnBtn" class="btn app-only" onclick="openWarn()"><span class="wi">&#9888;&#65038;</span> <span data-i="warnBtn"></span></button>
+<button id="donBtn" class="btn don" onclick="openDonate()"><span class="hrt">&#9829;&#65038;</span> <span data-i="donBtn"></span></button>
 <div class="status" id="status"></div></div></div>
 <div id="error"></div><div id="ovWarn"></div><div id="alert"></div>
 <section class="kpis">
-  <div class="metric"><div class="label" data-i="cpuT"></div><div class="cpu-pair"><div class="big" id="temp">—</div><span class="sep" id="loadSep">|</span><div class="big" id="load">—</div></div><div class="metric-sub" id="cpuSub">—</div></div>
-  <div class="metric"><div class="label" data-i="dmdT"></div><div class="big" id="dmd">—</div><div class="metric-sub" id="dmdSub">—</div><div class="bar"><i id="dmdBar"></i></div></div>
+  <div class="metric xl"><div class="label" data-i="cpuT"></div><div class="cpu-pair"><div class="big" id="temp">—</div><span class="sep" id="loadSep">|</span><div class="big" id="load">—</div></div><div class="metric-sub" id="cpuSub">—</div></div>
+  <div class="metric xl"><div class="dmd-grid"><div class="label" data-i="dmdT"></div><div class="label lens-x" data-i="lensT"></div><div class="big" id="dmd">—</div><div class="big lens-x" id="lensVal">—</div></div><div class="metric-sub" id="dmdSub">—</div></div>
   <div class="metric"><div class="label" data-i="laserT"></div><div class="big" id="laserMax">—</div><div class="laser-row" id="laserRow"></div><div class="metric-sub" id="laserSub">—</div></div>
   <div class="metric"><div class="label" data-i="fanT"></div><div class="fan-pair"><div class="fan-item"><div class="fan-value" id="fan1">—</div><div class="fan-name" id="fan1n"></div></div><div class="fan-item"><div class="fan-value" id="fan2">—</div><div class="fan-name" id="fan2n"></div></div></div><div class="metric-sub" id="fanSub">—</div></div>
   <div class="metric"><div class="label" data-i="brT"></div><div class="big" id="brightness">—</div><div class="metric-sub" id="brSub">—</div></div>
@@ -911,13 +1040,16 @@ html.narrow .protection{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))
   <div class="metric"><div class="label" data-i="freqT"></div><div class="value" id="freq">—</div><div class="hint" id="freqHint">—</div></div>
   <div class="metric"><div class="label" data-i="memT"></div><div class="value" id="memory">—</div><div class="hint" id="memoryHint">—</div></div>
   <div class="metric"><div class="label" data-i="outT"></div><div class="value" id="output">—</div><div class="hint" id="outputHint">—</div></div>
-  <div class="metric"><div class="label" data-i="stT"></div><div class="value" id="storage">—</div><div class="hint" data-i="free"></div></div>
+  <div class="metric"><div class="label" data-i="stT"></div><div class="value" id="storage">—</div><div class="hint" id="storageHint"></div></div>
   <div class="metric"><div class="label" data-i="maxT"></div><div class="zone-line"><span>DMD</span><b id="maxDmd">—</b></div><div class="zone-line"><span data-i="lasers"></span><b id="maxLaser">—</b></div><div class="zone-line"><span data-i="cpu"></span><b id="maxCpu">—</b></div><div class="zone-line"><span data-i="throttling"></span><b id="maxThr">—</b></div></div>
   <div class="metric"><div class="label" data-i="verT"></div><div class="version-line"><span id="appLabel"></span><b id="appVersion">—</b></div><div class="version-line"><span data-i="fw"></span><b id="firmwareVersion">—</b></div><div class="version-line"><span>DLP</span><b id="dlpVersion">—</b></div><div class="version-line"><span data-i="model"></span><b id="modelCode">—</b></div></div>
   <div class="metric ultra-extra" id="extraZoneCard"><div class="label" data-i="extraT"></div><div class="zone-line"><span>GPU</span><b id="gpuTemp">—</b></div><div class="zone-line"><span>APU</span><b id="apuTemp">—</b></div></div>
 </section>
-<section class="prot"><div class="protection" id="protection"></div><div class="note" id="protNote"></div></section>
+<section class="prot"><div class="note" id="protNote"></div></section>
 </main>
+<div id="warn" onclick="if(event.target===this)closeWarn()"><div class="wn-box"><p data-i="wnText"></p><div id="wnList"></div>
+<div class="wn-btns"><button class="btn" id="wnTest" onclick="Android.testWarn()" data-i="wnTest"></button><span class="wn-hint" data-i="wnBack"></span></div></div></div>
+<div id="donate" onclick="if(event.target===this)closeDonate()"><div class="dn-box"><div class="dn-qr"><svg viewBox="0 0 37 37"><path fill="#fff" d="M0 0h37v37h-37z"/><path stroke="#000" d="M4 4.5h7m2 0h1m1 0h1m1 0h1m2 0h1m2 0h1m2 0h7m-29 1h1m5 0h1m3 0h2m1 0h3m1 0h2m1 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m2 0h2m2 0h5m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m1 0h1m1 0h3m2 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h1m2 0h2m1 0h1m1 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h3m1 0h3m3 0h2m2 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-18 1h2m1 0h1m2 0h4m-21 1h1m2 0h1m1 0h2m1 0h1m2 0h2m2 0h2m4 0h1m1 0h1m-23 1h2m4 0h2m1 0h1m1 0h1m1 0h2m4 0h1m1 0h1m2 0h1m2 0h1m-29 1h1m3 0h1m1 0h1m1 0h5m6 0h1m1 0h1m1 0h1m1 0h3m-26 1h2m1 0h1m3 0h1m4 0h2m2 0h2m1 0h1m4 0h2m-28 1h2m3 0h2m3 0h3m3 0h2m1 0h5m1 0h1m1 0h2m-28 1h1m1 0h1m3 0h1m3 0h1m3 0h6m-20 1h1m2 0h1m1 0h1m2 0h2m6 0h2m6 0h4m-29 1h2m2 0h2m3 0h1m1 0h7m6 0h2m1 0h1m-28 1h3m3 0h1m2 0h2m2 0h2m2 0h2m1 0h1m6 0h1m-26 1h2m1 0h1m2 0h1m1 0h2m4 0h2m3 0h3m1 0h1m2 0h1m-29 1h1m1 0h2m2 0h1m1 0h2m1 0h3m2 0h2m3 0h1m1 0h1m3 0h2m-27 1h2m1 0h1m3 0h1m2 0h2m1 0h1m1 0h5m2 0h1m2 0h2m-29 1h1m5 0h3m1 0h1m3 0h1m4 0h6m1 0h1m-19 1h3m2 0h1m2 0h2m1 0h2m3 0h1m1 0h3m-29 1h7m5 0h3m1 0h1m3 0h1m1 0h1m1 0h1m2 0h1m-28 1h1m5 0h1m1 0h1m4 0h1m1 0h1m3 0h2m3 0h3m-27 1h1m1 0h3m1 0h1m3 0h2m2 0h1m1 0h2m2 0h5m3 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h4m4 0h2m1 0h6m-28 1h1m1 0h3m1 0h1m2 0h1m1 0h3m2 0h1m2 0h3m2 0h3m1 0h1m-29 1h1m5 0h1m3 0h1m2 0h1m2 0h5m2 0h2m2 0h1m-28 1h7m1 0h1m1 0h4m1 0h1m1 0h1m2 0h1m3 0h2m1 0h1"/></svg></div><div class="dn-txt"><h2 data-i="dnTitle"></h2><p data-i="dnText"></p><div class="dn-url" id="dnUrl">boosty.to/jmgotemp</div><button class="btn" id="dnClose" onclick="closeDonate()" data-i="dnClose"></button></div></div></div>
 <script>
 const IS_APP=typeof Android!=='undefined';
 if(IS_APP)document.body.classList.add('is-app');
@@ -926,18 +1058,20 @@ const I18N={
 ru:{
  connecting:'подключение…',connected:'подключен',offline:'нет связи',error:'ошибка: ',subtitle:'Мониторинг проектора',
  updated:'обновлено',uptime:(h,m)=>`работает ${h} ч ${m} мин`,
- ovBtn:on=>`Окно поверх фильма: ${on?'вкл':'выкл'}`,corner:'Угол',
+ ovBtn:on=>`Компактный режим: ${on?'вкл':'выкл'}`,corner:'Угол',
+ donBtn:'Поддержать',dnTitle:'Поддержать JMGO Temp',dnClose:'Закрыть',
+ dnText:'Приложение бесплатное. Если оно вам пригодилось, можно сказать спасибо на Boosty — разовым донатом или подпиской. Наведите камеру телефона на QR-код.',
  ovWarn:'Нет разрешения на окно поверх других приложений. Выдайте его один раз с компьютера:',
  errApp:'Сервис JMGO не ответил. Это приложение работает только на проекторах JMGO.',
- errDash:'Проверь, что ADB включён и проектор в той же Wi‑Fi сети. Если на компьютере включён VPN — он может перехватывать локальную сеть.',
- cpuT:'Процессор: °C | загрузка',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C (макс.)',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
+ errDash:'Проверь, что ADB включен и проектор в той же Wi‑Fi сети. Если на компьютере включен VPN — он может перехватывать локальную сеть.',
+ cpuT:'Процессор: °C | загрузка',dmdT:'Матрица DMD, °C',laserT:'Лазеры, °C',fanT:'Вентиляторы, об/мин',brT:'Яркость (мощность лазера)',
  load:'загрузка',mhz:'МГц',hz:'Гц',gb:'ГБ',
- cpuThrAt:t=>`сброс частоты с ${t}&nbsp;°C · на оптику не влияет`,
+ cpuThrAt:t=>`сброс частоты с ${t}&nbsp;°C`,
  thrNow:(since,f)=>`⚠ троттлинг с ${since}: потолок ${f} МГц`,
- toOff:(m,l)=>`до отключения ${m} °C (порог ${l})`,toDim:(m,l)=>`до снижения яркости ${m} °C (порог ${l})`,
+ toOff:(m,l)=>`DMD: до отключения ${m} °C<br>порог отключения ${l} °C`,lensT:'Объектив, °C',toDim:(m,l)=>`до снижения яркости ${m} °C (порог ${l})`,
  stale:s=>`нет свежих данных (${s} с)`,waiting:'жду данные…',module:'модуль',
- fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p}&nbsp;% мощности${t!=null?` · автоматика держит лазеры около ${t}&nbsp;°C`:''}`,fanNo:'мощность — нет данных',
- brMax:'Макс.',iris:'диафрагма',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включён',
+ fanN:n=>`вент. ${n}`,fanSub:(p,t)=>`работают на ${p}&nbsp;% мощности${t!=null?`<br>автоматика держит лазеры около ${t}&nbsp;°C`:''}`,fanNo:'мощность — нет данных',
+ brMax:'Макс.',iris:'диафрагма',current:'ток лазеров',curNo:'ток лазеров недоступен',alNow:n=>`AL 2.0: сейчас ≈${n}/10 по току`,alOn:'AL 2.0 включен',
  e_no_service:'Сервис jmgomiddle-01 не найден — это не проектор JMGO?',e_no_dlp:'DLP-сервис JMGO недоступен.',e_service:'Нет связи с сервисом JMGO.',
  e_connecting:'Подключение к проектору…',e_no_adb:'Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.',
  e_connect:t=>`Не удалось подключиться к ${t}. Проверьте IP:порт в настройках беспроводной отладки.`,
@@ -946,19 +1080,29 @@ ru:{
  lasersLim:['лазеры: −ярк. / откл.',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'белый экран',
  modes:{14:'авто (по камере)',15:'Overlap',16:'производительность',20:'автотрапеция',21:'супер-контраст',22:'белый экран: ток повышен',23:'производительность · белый экран'},
- ch1:'Матрица и лазеры',ch1s:'· последний час · пунктир — пороги защиты',ch2:'Процессор и вентиляторы',ch2s:'· °C и % слева, об/мин справа · красный фон — троттлинг',
+ ch1:'Матрица и лазеры',ch1s:'· час · пунктир — пороги',ch2:'Процессор и вентиляторы',ch2s:'· об/мин справа · красное — троттлинг',
  collecting:'Собираю историю…',noTemp:'Нет данных о температуре',
  lOff:v=>`лазеры: откл. ${v}°`,lDim:v=>`лазеры: −яркость ${v}°`,dOff:v=>`DMD: откл. ${v}°`,fTgt:v=>`цель вент. ${v}°`,
  laserModule:n=>`лазерный модуль ${n}`,cpuC:'процессор, °C',loadP:'загрузка, %',freqP:'частота, % от макс.',
- freqT:'Частота процессора',freqHint:(mx,ld)=>`макс. ${mx} МГц${ld!=null?` · загрузка ${ld}%`:''}`,freqFixed:'зафиксирована прошивкой · снижается только при перегреве',thrCap:f=>`⚠ троттлинг, потолок ${f} МГц`,
- memT:'Память',memHint:(u,t)=>`${u} МБ из ${t} МБ занято`,outT:'Вывод изображения',outHint:'Разрешение · частота (вывод проектора)',hdmi:'HDMI-сигнал',
- stT:'Накопитель',free:'свободно',maxT:'Максимум за сеанс',lasers:'Лазеры',cpu:'Процессор',throttling:'Троттлинг',no:'нет',was:t=>`был, ${t}`,
+ freqT:'Частота процессора',freqHint:(mx,ld)=>`макс. ${mx} МГц${ld!=null?` · загрузка ${ld}%`:''}`,freqFixed:'падает только при перегреве',thrCap:f=>`⚠ троттлинг, потолок ${f} МГц`,
+ memT:'Память',memHint:(u,t)=>`${u} из ${t} МБ`,usedP:'% занято',stHint:(u,t)=>`${u} из ${t} ГБ`,outT:'Вывод изображения',hdmi:'HDMI-сигнал',
+ stT:'Накопитель',free:'свободно',freeOf:t=>`свободно из ${t} ГБ`,maxT:'Максимум за сеанс',lasers:'Лазеры',cpu:'Процессор',throttling:'Троттлинг',no:'нет',was:t=>`был, ${t}`,
  verT:'Версии',app:'JMGO Temp',dash:'Дашборд',fw:'Прошивка',model:'Модель',extraT:'Доп. датчики',
  pDmd:'DMD — отключение проектора',pDim:'Лазеры — снижение яркости',pOff:'Лазеры — отключение',
  pFan:hi=>`Вентиляторы держат лазеры около этой температуры${hi!=null?` (в ярких режимах — до ${hi} °C)`:''}`,
- nFw:'Пороги — из прошивки этого проектора.',nDef:'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.',
- nDlp:'Температуру DMD отдаёт контроллер DLP (датчик в самой матрице), поэтому и порог выше.',nNtc:'Датчик DMD стоит рядом с матрицей, сами зеркала горячее.',
- nPhoto:'Чтобы следить за охлаждением, сфотографируйте экран после 30–60 мин фильма и сравните через несколько месяцев в тех же условиях: +5 °C и больше или заметно выше обороты — пора обслуживать.',
+ warnBtn:'Предупреждения',wnTitle:'Предупреждения поверх фильма',
+ wnText:'После выхода из приложения оно раз в 5 с проверяет температуры и при перегреве на 20 с показывает сообщение слева вверху. Если выключить все — после выхода ничего не делает.',
+ wnTest:'Пример предупреждения',wnBack:'«Назад» на пульте — закрыть',
+ wnItems:[['all','Все предупреждения',''],
+  ['w_las','Лазеры','за 1,5 °C до снижения яркости'],
+  ['w_dmd','Матрица DMD','за 3 °C до отключения'],
+  ['w_cpu','Процессор — перегрев','от 100 °C'],
+  ['w_thr','Процессор — троттлинг','прошивка снизила частоту'],
+  ['w_fan','Вентилятор остановился','0 об/мин под нагрузкой']],
+ wnOn:'вкл',wnOff:'выкл',wnPart:'частично',
+nFw:c=>`Пороги — из прошивки этого проектора${c?` (${c})`:''}.`,noLim:'в прошивке нет порога для этого датчика',noDmd:'эта модель не отдает температуру DMD',nDef:'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.',
+ nDlp:'DMD меряет датчик в самой матрице (через DLP), поэтому порог выше.',nNtc:'Датчик DMD стоит рядом с матрицей, зеркала горячее.',
+ nPhoto:'Для контроля охлаждения сравнивайте снимок этого экрана после 30–60 мин фильма раз в несколько месяцев: +5 °C или заметно выше обороты — пора обслуживать.',
  aStop:(n,p)=>`Вентилятор ${n}: 0 об/мин${p!=null?` при мощности ${p} %`:''} — похоже, не крутится.`,
  aDmd:(v,l)=>`DMD близко к порогу отключения: ${v} из ${l} °C.`,aLas:(v,l)=>`Лазеры близко к порогу снижения яркости: ${v} из ${l} °C.`,
  aFans:(a,b)=>`Вентиляторы крутятся заметно по-разному (${a} и ${b} об/мин).`,aNoTh:'Пока нет данных о температуре DMD/лазеров — подождите 10–20 с.',
@@ -967,17 +1111,19 @@ ru:{
 en:{
  connecting:'connecting…',connected:'connected',offline:'offline',error:'error: ',subtitle:'Projector monitor',
  updated:'updated',uptime:(h,m)=>`uptime ${h} h ${m} min`,
- ovBtn:on=>`Overlay: ${on?'on':'off'}`,corner:'Corner',
+ ovBtn:on=>`Compact mode: ${on?'on':'off'}`,corner:'Corner',
+ donBtn:'Support',dnTitle:'Support JMGO Temp',dnClose:'Close',
+ dnText:'The app is free. If you find it useful, you can say thanks on Boosty with a one-time tip or a subscription. Point your phone camera at the QR code.',
  ovWarn:'No permission to draw over other apps. Grant it once from a computer:',
  errApp:'The JMGO service did not respond. This app works only on JMGO projectors.',
  errDash:'Check that ADB is enabled and the projector is on the same Wi‑Fi network. A VPN on the computer may intercept local traffic.',
- cpuT:'CPU: °C | load',dmdT:'DMD chip, °C',laserT:'Lasers, °C (max)',fanT:'Fans, rpm',brT:'Brightness (laser power)',
+ cpuT:'CPU: °C | load',dmdT:'DMD chip, °C',laserT:'Lasers, °C',fanT:'Fans, rpm',brT:'Brightness (laser power)',
  load:'load',mhz:'MHz',hz:'Hz',gb:'GB',
- cpuThrAt:t=>`throttles from ${t}&nbsp;°C · doesn't affect the optics`,
+ cpuThrAt:t=>`throttles from ${t}&nbsp;°C`,
  thrNow:(since,f)=>`⚠ throttling since ${since}: capped at ${f} MHz`,
- toOff:(m,l)=>`${m} °C to shutdown (limit ${l})`,toDim:(m,l)=>`${m} °C to dimming (limit ${l})`,
+ toOff:(m,l)=>`DMD: ${m} °C to shutdown<br>shutdown limit ${l} °C`,lensT:'Lens, °C',toDim:(m,l)=>`${m} °C to dimming (limit ${l})`,
  stale:s=>`no fresh data (${s} s)`,waiting:'waiting for data…',module:'module',
- fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}% power${t!=null?` · auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
+ fanN:n=>`fan ${n}`,fanSub:(p,t)=>`running at ${p}% power${t!=null?`<br>auto control keeps lasers near ${t}&nbsp;°C`:''}`,fanNo:'power — no data',
  brMax:'Max',iris:'aperture',current:'laser current',curNo:'laser current unavailable',alNow:n=>`AL 2.0: now ≈${n}/10 by current`,alOn:'AL 2.0 on',
  e_no_service:'Service jmgomiddle-01 not found — is this a JMGO projector?',e_no_dlp:'JMGO DLP service is unavailable.',e_service:'No connection to the JMGO service.',
  e_connecting:'Connecting to the projector…',e_no_adb:'adb not found. Put jmgo_dash.py into the platform-tools folder or install adb.',
@@ -987,19 +1133,29 @@ en:{
  lasersLim:['lasers: dim / off',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'white screen',
  modes:{14:'auto (camera)',15:'Overlap',16:'performance',20:'auto keystone',21:'super contrast',22:'white screen: boosted current',23:'performance · white screen'},
- ch1:'DMD and lasers',ch1s:'· last hour · dashed = protection limits',ch2:'CPU and fans',ch2s:'· °C and % left, rpm right · red = throttling',
+ ch1:'DMD and lasers',ch1s:'· hour · dashed = limits',ch2:'CPU and fans',ch2s:'· rpm on the right · red = throttling',
  collecting:'Collecting history…',noTemp:'No temperature data',
  lOff:v=>`lasers: off ${v}°`,lDim:v=>`lasers: dim ${v}°`,dOff:v=>`DMD: off ${v}°`,fTgt:v=>`fan target ${v}°`,
  laserModule:n=>`laser module ${n}`,cpuC:'CPU, °C',loadP:'load, %',freqP:'frequency, % of max',
- freqT:'CPU frequency',freqHint:(mx,ld)=>`max ${mx} MHz${ld!=null?` · load ${ld}%`:''}`,freqFixed:'fixed by firmware · drops only when overheating',thrCap:f=>`⚠ throttling, capped at ${f} MHz`,
- memT:'Memory',memHint:(u,t)=>`${u} MB of ${t} MB used`,outT:'Video output',outHint:'Resolution · refresh (projector output)',hdmi:'HDMI signal',
- stT:'Storage',free:'free',maxT:'Session max',lasers:'Lasers',cpu:'CPU',throttling:'Throttling',no:'no',was:t=>`yes, ${t}`,
+ freqT:'CPU frequency',freqHint:(mx,ld)=>`max ${mx} MHz${ld!=null?` · load ${ld}%`:''}`,freqFixed:'drops only when overheating',thrCap:f=>`⚠ throttling, capped at ${f} MHz`,
+ memT:'Memory',memHint:(u,t)=>`${u} of ${t} MB`,usedP:'% used',stHint:(u,t)=>`${u} of ${t} GB`,outT:'Video output',hdmi:'HDMI signal',
+ stT:'Storage',free:'free',freeOf:t=>`free of ${t} GB`,maxT:'Session max',lasers:'Lasers',cpu:'CPU',throttling:'Throttling',no:'no',was:t=>`yes, ${t}`,
  verT:'Versions',app:'JMGO Temp',dash:'Dashboard',fw:'Firmware',model:'Model',extraT:'Extra sensors',
  pDmd:'DMD — projector shutdown',pDim:'Lasers — brightness reduction',pOff:'Lasers — shutdown',
  pFan:hi=>`Fans keep the lasers near this temperature${hi!=null?` (up to ${hi} °C in bright modes)`:''}`,
- nFw:'Limits are read from this projector\'s firmware.',nDef:'⚠ Limits not found in the firmware — N5 Pro values are shown.',
- nDlp:'DMD temperature comes from the DLP controller (sensor inside the chip), hence the higher limit.',nNtc:'The DMD sensor sits next to the chip; the mirrors themselves run hotter.',
- nPhoto:'To track cooling, photograph this screen after 30–60 min of a movie and compare a few months later under the same conditions: +5 °C or more, or noticeably higher fan speeds, means it\'s time for servicing.',
+ warnBtn:'Warnings',wnTitle:'Warnings over the movie',
+ wnText:'After you leave the app it checks temperatures every 5 s and, if something overheats, shows a message at the top left for 20 s. With everything off, it does nothing after you leave.',
+ wnTest:'Example warning',wnBack:'Back on the remote — close',
+ wnItems:[['all','All warnings',''],
+  ['w_las','Lasers','1.5 °C before dimming'],
+  ['w_dmd','DMD chip','3 °C before shutdown'],
+  ['w_cpu','CPU overheating','from 100 °C'],
+  ['w_thr','CPU throttling','firmware lowered the frequency'],
+  ['w_fan','Fan stopped','0 rpm under load']],
+ wnOn:'on',wnOff:'off',wnPart:'partly',
+nFw:c=>`Limits are read from this projector's firmware${c?` (${c})`:''}.`,noLim:'the firmware sets no limit for this sensor',noDmd:'this model does not report the DMD temperature',nDef:'⚠ Limits not found in the firmware — N5 Pro values are shown.',
+ nDlp:'DMD is measured inside the chip (via DLP), hence the higher limit.',nNtc:'The DMD sensor sits next to the chip; the mirrors run hotter.',
+ nPhoto:'To track cooling, compare a photo of this screen after 30–60 min of a movie every few months: +5 °C or clearly higher fan speeds means it\'s time for servicing.',
  aStop:(n,p)=>`Fan ${n}: 0 rpm${p!=null?` at ${p}% power`:''} — it seems to be stopped.`,
  aDmd:(v,l)=>`DMD is close to the shutdown limit: ${v} of ${l} °C.`,aLas:(v,l)=>`Lasers are close to the dimming limit: ${v} of ${l} °C.`,
  aFans:(a,b)=>`Fans run at noticeably different speeds (${a} and ${b} rpm).`,aNoTh:'No DMD/laser temperature yet — wait 10–20 s.',
@@ -1017,11 +1173,26 @@ function applyStatic(){document.documentElement.lang=LANG;document.querySelector
 function toggleLang(){LANG=LANG==='ru'?'en':'ru';try{IS_APP?Android.setLang(LANG):localStorage.setItem('jmgo_lang',LANG)}catch(e){}applyStatic();if(last)render(last);updOverlayBtn()}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function set(id,v){$(id).innerHTML=v}
+function openDonate(){$('donate').classList.add('open');$('dnClose').focus()}
+function closeDonate(){$('donate').classList.remove('open');$('donBtn').focus()}
+function renderWarn(){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}const f=document.activeElement&&document.activeElement.dataset.k;
+ const tr=(last&&last.latest&&last.latest.trip_passive0)||123;
+ $('wnList').innerHTML=T('wnItems').map(([k,t,h])=>[k,t,k==='w_cpu'?h.replace('100',Math.min(100,tr-10)):h]).map(([k,t,h])=>{const st=k==='all'?(WKEYS.every(x=>p[x]!==false)?'wnOn':WKEYS.some(x=>p[x]!==false)?'wnPart':'wnOff'):(p[k]!==false?'wnOn':'wnOff');
+   return `<button class="btn wn-row${k==='all'?' all':''}${st==='wnOn'?' on':''}" data-k="${k}" onclick="toggleWarn('${k}')"><b>${T(st)}</b><span>${t}${h?`<small>${h}</small>`:''}</span></button>`}).join('');if(f){const b=$('wnList').querySelector(`[data-k="${f}"]`);b&&b.focus()}}
+const WKEYS=['w_las','w_dmd','w_cpu','w_thr','w_fan'];
+// «Все»: если включено все — выключить все, иначе (выкл или частично) — включить все
+function toggleWarn(k){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}Android.setWarn(k,k==='all'?!WKEYS.every(x=>p[x]!==false):p[k]===false);renderWarn()}
+function openWarn(){renderWarn();const r=$('warnBtn').getBoundingClientRect(),b=document.querySelector('.wn-box'),right=Math.max(8,innerWidth-r.right-40);
+ b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`);
+ $('warnBtn').classList.add('on');$('warn').classList.add('open');$('wnList').querySelector('.btn').focus()}
+function closeWarn(){$('warn').classList.remove('open');$('warnBtn').classList.remove('on');$('warnBtn').focus()}
+function onBack(){if($('donate').classList.contains('open')){closeDonate();return true}if($('warn').classList.contains('open')){closeWarn();return true}return false}
+if(!IS_APP)$('dnUrl').innerHTML='<a href="https://boosty.to/jmgotemp/donate" target="_blank" rel="noopener">boosty.to/jmgotemp</a>';
 const fmt=v=>v==null?'—':(Math.round(v*10)/10).toFixed(1);
 const unit=(v,u)=>v==null||v===''?'—':`${esc(v)}<span class="unit"> ${u}</span>`;
 const hm=ts=>new Date(ts*1000).toLocaleTimeString(LANG==='ru'?'ru':'en-GB',{hour:'2-digit',minute:'2-digit'});
 // Датчики стоят на лазерных модулях, а не на цветах, поэтому цвета линий нейтральные.
-const LCOL=['#e9edf3','#5fd3c6','#b8a1ff','#c9a46b'];
+const LCOL=['#e9edf3','#5fd3c6','#b8a1ff','#ff7ac8'];
 const FIXED_MODES=[15,16,22,23];
 function margCls(m){return m==null?'':m<=2?'hot':m<=6?'warn':'ok'}
 function resolutionLabel(w,h){if(w>=7680)return '8K';if(w>=3840||h>=2160)return '4K UHD';if(w>=2560||h>=1440)return '2K QHD';if(h>=1080)return 'Full HD';if(h>=720)return 'HD';return ''}
@@ -1031,9 +1202,9 @@ function timeAxis(x,p,L,R,W,y,dpr){x.fillStyle='#a3aab6';x.textAlign='left';x.fi
 function drawCombined(points){
   const {x,W,H,dpr}=canvasCtx('combinedChart');
   if(points.length<2){x.fillStyle='#a3aab6';x.fillText(T('collecting'),18*dpr,38*dpr);return}
-  const L=46*dpr,R=52*dpr,T0=12*dpr,B=20*dpr,pw=W-L-R,ph=H-T0-B;
   const fanPeak=Math.max(0,...points.map(p=>Math.max(p.fan1||0,p.fan2||0)));
   const tMax=125,fMax=Math.max(2500,Math.ceil(fanPeak/500)*500);
+  const L=Math.ceil(x.measureText('125').width)+12*dpr,R=Math.ceil(x.measureText(String(fMax)).width)+10*dpr,T0=12*dpr,B=20*dpr,pw=W-L-R,ph=H-T0-B;
   const X=i=>L+i/(points.length-1)*pw;
   x.fillStyle='rgba(241,107,104,.18)';points.forEach((p,i)=>{if(p.thr&&i>0)x.fillRect(X(i-1),T0,X(i)-X(i-1)+1,ph)});
   x.strokeStyle='#303641';x.fillStyle='#a3aab6';x.lineWidth=1*dpr;
@@ -1042,9 +1213,9 @@ function drawCombined(points){
   timeAxis(x,points,L,R,W,T0+ph,dpr);
   const line=(key,color,scale,w,dash)=>{x.beginPath();let s=false;points.forEach((p,i)=>{const v=p[key];if(v==null||v<0){s=false;return}const py=T0+(1-v/scale)*ph;if(!s){x.moveTo(X(i),py);s=true}else x.lineTo(X(i),py)});x.save();if(dash)x.setLineDash(dash);x.strokeStyle=color;x.lineWidth=w*dpr;x.stroke();x.restore()};
   const has=k=>points.some(p=>p[k]!=null&&p[k]>=0);
-  line('fan1','#72aaff',fMax,2);line('fan2','#d49aff',fMax,2);
-  if(has('load'))line('load','#f2bd55',tMax,1.5);
-  line('temp','#52d273',tMax,2.5);
+  line('fan1','#72aaff',fMax,1.8);line('fan2','#d49aff',fMax,1.8);
+  if(has('load'))line('load','#f2bd55',tMax,1.8);
+  line('temp','#52d273',tMax,1.8);
   let lg=`<span><i class="legend-dot" style="background:#52d273"></i>${T('cpuC')}</span>`;
   if(has('load'))lg+=`<span><i class="legend-dot" style="background:#f2bd55"></i>${T('loadP')}</span>`;
   lg+=`<span><i class="legend-dot" style="background:#72aaff"></i>${T('fanN',1)}</span><span><i class="legend-dot" style="background:#d49aff"></i>${T('fanN',2)}</span>`;
@@ -1055,40 +1226,34 @@ function drawThermal(points,lim){
   const {x,W,H,dpr}=canvasCtx('thermalChart');
   const hasData=points.some(p=>p.dmd!=null||(p.l&&p.l.length));
   if(points.length<2||!hasData){x.fillStyle='#a3aab6';x.fillText(points.length<2?T('collecting'):T('noTemp'),18*dpr,38*dpr);return}
-  const L=46*dpr,R=150*dpr,T0=12*dpr,B=20*dpr,pw=W-L-R,ph=H-T0-B;
   let vals=[];points.forEach(p=>{if(p.dmd!=null)vals.push(p.dmd);(p.l||[]).forEach(v=>vals.push(v))});
   const top=Math.max(lim.laser_shutdown||57,lim.dmd_shutdown||55,...vals)+3,bot=Math.max(0,Math.floor((Math.min(...vals)-5)/5)*5);
+  const pair=lim.laser_shutdown!=null&&lim.laser_derate!=null&&Math.abs(lim.laser_shutdown-lim.laser_derate)<=1.5;
+  const L=Math.ceil(x.measureText(String(Math.floor(top/10)*10)).width)+12*dpr,R=12*dpr;
+  const T0=12*dpr,B=20*dpr,pw=W-L-R,ph=H-T0-B;
   const Y=v=>T0+(1-(v-bot)/(top-bot))*ph;
   x.strokeStyle='#303641';x.fillStyle='#a3aab6';x.lineWidth=1*dpr;
   for(let v=Math.ceil(bot/10)*10;v<=top;v+=10){const y=Y(v);x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.textAlign='right';x.fillText(v,L-8*dpr,y+4*dpr)}
   timeAxis(x,points,L,R,W,T0+ph,dpr);
   const lbl=[];
-  const ref=(v,color,label)=>{if(v==null)return;const y=Y(v);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle=color;x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();lbl.push({y,color,label})};
-  if(lim.laser_shutdown!=null&&lim.laser_derate!=null&&Math.abs(lim.laser_shutdown-lim.laser_derate)<=1.5){
-    const ll=T('lasersLim');ref(lim.laser_derate,'#ff9f43',ll[0]);lbl.push({y:Y(lim.laser_derate)+0.01,color:'#f16b68',label:ll[1](lim.laser_derate,lim.laser_shutdown)});const y=Y(lim.laser_shutdown);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle='#f16b68';x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();
-  }else{
-  ref(lim.laser_shutdown,'#f16b68',T('lOff',lim.laser_shutdown));
-  ref(lim.laser_derate,'#ff9f43',T('lDim',lim.laser_derate));}
+  const ref=(v,color,label)=>{if(v==null)return;const y=Y(v);x.save();x.setLineDash([6*dpr,5*dpr]);x.strokeStyle=color;x.lineWidth=1.5*dpr;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.restore();if(label)lbl.push({y,color,label})};
+  if(pair){const ll=T('lasersLim');ref(lim.laser_derate,'#f16b68',ll[0]+' '+ll[1](lim.laser_derate,lim.laser_shutdown))}
+  else{ref(lim.laser_shutdown,'#f16b68',T('lOff',lim.laser_shutdown));ref(lim.laser_derate,'#f16b68',T('lDim',lim.laser_derate))}
   ref(lim.dmd_shutdown,'#f2bd55',T('dOff',lim.dmd_shutdown));
-  const tg=pidTargets(lim);if(tg.length)ref(tg[0],'#8b93a1',T('fTgt',tg[0]));
-  lbl.sort((a,b)=>a.y-b.y);const gap=15*dpr;let prev=-1e9;
-  lbl.forEach(o=>{o.ty=Math.max(o.y+4*dpr,prev+gap);prev=o.ty});
-  const over=prev-(T0+ph+4*dpr);if(over>0)lbl.forEach(o=>o.ty-=over);
-  lbl.forEach(o=>{x.fillStyle=o.color;x.textAlign='left';x.fillText(o.label,W-R+6*dpr,o.ty);if(Math.abs(o.ty-4*dpr-o.y)>2*dpr){x.strokeStyle=o.color;x.lineWidth=1*dpr;x.beginPath();x.moveTo(W-R,o.y);x.lineTo(W-R+4*dpr,o.ty-4*dpr);x.stroke()}});
   const line=(get,color,w)=>{x.beginPath();let s=false;points.forEach((p,i)=>{const v=get(p);if(v==null){s=false;return}const px=L+i/(points.length-1)*pw,py=Y(v);if(!s){x.moveTo(px,py);s=true}else x.lineTo(px,py)});x.strokeStyle=color;x.lineWidth=w*dpr;x.stroke()};
   const n=Math.max(0,...points.map(p=>(p.l||[]).length));
   for(let i=0;i<n;i++)line(p=>(p.l||[])[i],LCOL[i],1.8);
-  line(p=>p.dmd,'#f2bd55',2.8);
+  line(p=>p.dmd,'#f2bd55',1.8);
+  const fh=parseInt(x.font)||14*dpr,boxes=[];
+  lbl.sort((a,b)=>a.y-b.y).forEach(o=>{const w=x.measureText(o.label).width+8*dpr,x0=W-R-w;
+    const fits=t=>t>=T0-2*dpr&&!boxes.some(b=>t<b+fh+4*dpr&&b<t+fh+4*dpr);
+    let t=o.y-fh-5*dpr;if(!fits(t))t=o.y+3*dpr;boxes.push(t);
+    x.fillStyle='rgba(25,28,34,.85)';x.fillRect(x0,t,w,fh+4*dpr);x.fillStyle=o.color;x.textAlign='left';x.fillText(o.label,x0+4*dpr,t+fh)});
   let lg='<span><i class="legend-dot" style="background:#f2bd55"></i>DMD</span>';for(let i=0;i<n;i++)lg+=`<span><i class="legend-dot" style="background:${LCOL[i]}"></i>${T('laserModule',i+1)}</span>`;set('thermalLegend',lg);
 }
 function renderProtection(d){
-  const l=d.limits||{},pt=pidTargets(l);
-  set('protection',[
-    `<div class="threshold critical"><b>${l.dmd_shutdown??'—'} °C</b><span>${T('pDmd')}</span></div>`,
-    `<div class="threshold hot"><b>${l.laser_derate??'—'} °C</b><span>${T('pDim')}</span></div>`,
-    `<div class="threshold critical"><b>${l.laser_shutdown??'—'} °C</b><span>${T('pOff')}</span></div>`,
-    `<div class="threshold info"><b>${pt.length?pt[0]+' °C':'—'}</b><span>${T('pFan',pt.length>1?pt[pt.length-1]:null)}</span></div>`].join(''));
-  set('protNote',`${T(l.from_firmware?'nFw':'nDef')} ${T(l.dmd_source==='dlp'?'nDlp':'nNtc')} ${T('nPhoto')}`);
+  const l=d.limits||{};
+  set('protNote',`${l.from_firmware===false?T('nDef')+' ':''}${T('nPhoto')}`);
 }
 function errText(d){const c=d.error_code;if(c&&I18N.ru['e_'+c]!=null){const t=T('e_'+c,...(d.error_args||[]));return esc(t)+(c==='adb'||c==='service'?'<br><span class="muted">'+esc(d.error)+'</span>':'')}return esc(d.error)}
 function render(r){
@@ -1098,17 +1263,17 @@ function render(r){
   $('name').textContent=d.name||'JMGO';
   $('device').textContent=`${T('updated')} ${new Date(d.ts*1000).toLocaleTimeString(LANG==='ru'?'ru':'en-GB')}${d.uptime?' · '+T('uptime',Math.floor(d.uptime/3600),Math.floor(d.uptime%3600/60)):''}`;
   const th=d.thermal||{},lim=d.limits||{};
-  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':`${esc(t)}<span class="unit">°</span>`);$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
+  const t=d.temp,thr=d.trip_passive0||123;set('temp',t==null?'—':esc(t));$('temp').className='big '+(t>=100?'hot':t>=90?'warn':'');
   const hasLoad=d.cpu_usage!=null&&d.cpu_usage>=0;set('load',hasLoad?`${d.cpu_usage}<span class="unit">%</span>`:'');$('load').style.display=$('loadSep').style.display=hasLoad?'':'none';
   set('cpuSub',`${esc(d.chip||'')}<br>${d.throttled?`<span class="thr">${T('thrNow',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap)}</span>`:T('cpuThrAt',thr)}`);
   const dm=th.dmd,dmM=dm!=null&&lim.dmd_shutdown?lim.dmd_shutdown-dm:null;
   set('dmd',dm==null?'—':fmt(dm));$('dmd').className='big '+margCls(dmM);
-  set('dmdSub',dm==null?(th.age!=null?T('stale',th.age):T('waiting')):T('toOff',fmt(dmM),lim.dmd_shutdown));
-  const bar=$('dmdBar');if(dm!=null&&lim.dmd_shutdown){bar.style.width=Math.max(0,Math.min(100,(dm-20)/(lim.dmd_shutdown-20)*100))+'%';bar.className=margCls(dmM)==='ok'?'':margCls(dmM)}else bar.style.width='0';
+  set('dmdSub',dm==null?(lim.from_firmware&&!lim.dmd_shutdown&&th.fresh?T('noDmd'):th.age!=null?T('stale',th.age):T('waiting')):lim.dmd_shutdown?T('toOff',fmt(dmM),lim.dmd_shutdown):T('noLim'));
+  set('lensVal',th.lens!=null?fmt(th.lens):'—');$('lensVal').parentNode.classList.toggle('has-lens',th.lens!=null);
   const lm=th.laser_max,lM=lm!=null&&lim.laser_derate?lim.laser_derate-lm:null;
   set('laserMax',lm==null?'—':fmt(lm));$('laserMax').className='big '+margCls(lM);
   set('laserRow',(th.lasers||[]).map((v,i)=>`<div class="laser-chip" style="border-bottom:2px solid ${LCOL[i]}"><small>${T('module')} ${i+1}</small>${fmt(v)}</div>`).join(''));
-  set('laserSub',lm==null?'—':T('toDim',fmt(lM),lim.laser_derate));
+  set('laserSub',lm==null?'—':lim.laser_derate?T('toDim',fmt(lM),lim.laser_derate):T('noLim'));
   set('fan1',d.fan1??'—');set('fan2',d.fan2??'—');
   const duty=th.fan_duty,tg=pidTargets(lim);const tgt=th.fan_mode==='PID'&&tg.length?tg[Math.min(th.overlap_level||0,tg.length-1)]:null;
   set('fanSub',duty&&duty.length?T('fanSub',Math.max(...duty),tgt):T('fanNo'));
@@ -1123,28 +1288,29 @@ function render(r){
   if(d.bw_status===2&&mode!==22&&mode!==23)bs.push(T('bwWhite'));
   const pc=d.laser_current_pct;
   bs.push(pc?`${T('current')}: <b style="color:#ff6b6b">R ${pc[0]}%</b> · <b style="color:#5ee08a">G ${pc[1]}%</b> · <b style="color:#6fa8ff">B ${pc[2]}%</b>`:T('curNo'));
-  set('brSub',bs.join('<br>'));
+  set('brSub',bs.join('<br>'));$('brightness').classList.toggle('dense',bs.length>3);
   set('freq',d.freq?unit(d.freq,T('mhz')):'—');$('freq').className='value'+(d.throttled?' hot':'');
   set('freqHint',d.throttled?`<span class="thr">${T('thrCap',d.freq_cap)}</span>`:(d.freq_min&&d.freq_hw&&d.freq_min>=d.freq_hw?T('freqFixed'):T('freqHint',d.freq_hw||'—',d.cpu_usage>=0?d.cpu_usage:null)));
   const used=d.mem_total&&d.mem_avail?Math.round((d.mem_total-d.mem_avail)/d.mem_total*100):null;
-  set('memory',used==null?'—':`${used}<span class="unit"> %</span>`);set('memoryHint',used==null?'':T('memHint',Math.round((d.mem_total-d.mem_avail)/1024),Math.round(d.mem_total/1024)));
-  set('storage',d.storage_free_kb==null?'—':`${(d.storage_free_kb/1048576).toFixed(1)} ${T('gb')}`);
+  set('memory',used==null?'—':`${used}<span class="unit"> ${T('usedP')}</span>`);set('memoryHint',used==null?'':T('memHint',Math.round((d.mem_total-d.mem_avail)/1024),Math.round(d.mem_total/1024)));
+  const stT=d.storage_total_kb,stU=stT&&d.storage_free_kb!=null?stT-d.storage_free_kb:null;
+  set('storage',stU==null?'—':`${Math.round(stU/stT*100)}<span class="unit"> ${T('usedP')}</span>`);set('storageHint',stU==null?'':T('stHint',(stU/1048576).toFixed(1),Math.round(stT/1048576)));
   set('output',d.output_width&&d.output_height?`${resolutionLabel(d.output_width,d.output_height)}<span class="unit"> ${d.output_width}×${d.output_height} · ${d.output_hz||'—'} ${T('hz')}</span>`:'—');
-  let oh=T('outHint');
+  let oh='';
   if(d.input_rslt){const m=/(\d+)\s*[xX×]\s*(\d+)[^@\d]*(?:@\s*([\d.]+))?/.exec(d.input_rslt);const hz=m&&m[3]?m[3]:d.input_fps;let z=hz?Math.round(+hz):0;if([23,29,47,59,119].includes(z))z++;
     oh=`${T('hdmi')}: ${m?shortRes(+m[1],+m[2]):esc(d.input_rslt)}${z?` · ${z} ${T('hz')}`:''}${d.input_vrr>0?' · VRR':''}`}
   set('outputHint',oh);
   const mx=d.session_max||{};set('maxDmd',mx.dmd!=null?`${fmt(mx.dmd)} °C`:'—');set('maxLaser',mx.laser!=null?`${fmt(mx.laser)} °C`:'—');set('maxCpu',mx.cpu!=null?`${mx.cpu} °C`:'—');
   set('maxThr',d.throttle_first?`<b class="hot">${T('was',hm(d.throttle_first))}</b>`:T('no'));
   set('appVersion',esc(d.app_version||'—'));set('firmwareVersion',esc(d.firmware_version||'—'));
-  set('dlpVersion',esc([d.dlp_version,d.dlp_model].filter(Boolean).join(' · ')||'—'));set('modelCode',esc(d.model||'—'));
+  set('dlpVersion',esc(d.dlp_version||'—'));set('modelCode',esc(d.model||'—'));
   const zones=d.extra_zones||[],gpu=zones.find(z=>/gpu/i.test(z.name)),apu=zones.find(z=>/apu|npu/i.test(z.name));
   set('gpuTemp',gpu?`${gpu.temp} °C`:'—');set('apuTemp',apu?`${apu.temp} °C`:'—');$('extraZoneCard').classList.toggle('visible',Boolean(gpu||apu));
   const al=[];
   if(dmM!=null&&dmM<=6)al.push(T('aDmd',fmt(dm),lim.dmd_shutdown));
   if(lM!=null&&lM<=6)al.push(T('aLas',fmt(lm),lim.laser_derate));
   if(d.throttled)al.push(T('aThr',d.throttle_since?hm(d.throttle_since):'—',d.freq_cap));
-  // вентилятор стоит: 0 об/мин при поданной мощности > 30 % (одиночные сбойные нули отфильтрованы ещё при опросе)
+  // вентилятор стоит: 0 об/мин при поданной мощности > 30 % (одиночные сбойные нули отфильтрованы еще при опросе)
   const dmax=duty&&duty.length?Math.max(...duty):null;const stop=[d.fan1,d.fan2].map((v,i)=>v===0&&(dmax!=null?dmax>30:Math.max(d.fan1||0,d.fan2||0)>300)?i+1:0).filter(Boolean);
   if(stop.length)stop.forEach(n=>al.push(T('aStop',n,dmax)));
   else if(d.fan1!=null&&d.fan2!=null&&Math.max(d.fan1,d.fan2)>300&&Math.abs(d.fan1-d.fan2)/Math.max(d.fan1,d.fan2)>0.25)al.push(T('aFans',d.fan1,d.fan2));
@@ -1157,9 +1323,13 @@ const CORN={tr:'↗',br:'↘',bl:'↙',tl:'↖'};
 function updOverlayBtn(){if(!IS_APP)return;try{const on=Android.overlayOn(),can=Android.canOverlay();const b=$('ovBtn');b.textContent=T('ovBtn',on);b.classList.toggle('on',on);$('cornerBtn').textContent=`${T('corner')}: ${CORN[Android.corner()]||'↗'}`;
  $('ovWarn').innerHTML=can?'':`<div class="alert">${T('ovWarn')}<br><b>adb shell appops set ${esc(typeof Android.pkg==='function'?Android.pkg():'io.github.jmgotemp')} SYSTEM_ALERT_WINDOW allow</b></div>`}catch(e){}}
 document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&onBack()){e.preventDefault();return}
+  if($('donate').classList.contains('open')&&e.key.startsWith('Arrow')){$('dnClose').focus();e.preventDefault();return}
+  if($('warn').classList.contains('open')&&e.key.startsWith('Arrow')){const bs=[...$('warn').querySelectorAll('.btn')];let i=bs.indexOf(document.activeElement);const n=bs.length;
+    i=i<0?0:e.key==='ArrowDown'?Math.min(n-1,i+1):e.key==='ArrowUp'?Math.max(0,i-1):e.key==='ArrowRight'?Math.min(n-1,i+1):Math.max(0,i-1);bs[i].focus();bs[i].scrollIntoView({block:'nearest'});e.preventDefault();return}
   if(e.key==='ArrowDown'){window.scrollBy({top:260,behavior:'smooth'});e.preventDefault()}
   else if(e.key==='ArrowUp'){window.scrollBy({top:-260,behavior:'smooth'});e.preventDefault()}
-  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent);let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
+  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent&&!b.closest('#warn'));let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
 });
 async function tick(){
   try{

@@ -29,15 +29,26 @@ public class MainActivity extends Activity {
         setContentView(web);
         web.loadUrl("file:///android_asset/dashboard.html");
         web.requestFocus();
+        // фоновые предупреждения о перегреве: работают, пока приложение в памяти после выхода с экрана
+        if (prefs().getBoolean("watch", true)) startForegroundService(new Intent(this, WatchService.class));
         handleIntent(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
 
-    /** am start -n <пакет>/io.github.jmgotemp.MainActivity --es overlay on|off  — включить/выключить окно без пульта.
+    /** am start -n <пакет>/io.github.jmgotemp.MainActivity --es overlay on|off  — включить/выключить компактный режим без пульта.
      *  Пакет с 1.3: com.jmgo.jmgotemp (hippo не закрывает приложения com.jmgo.*), до 1.3: io.github.jmgotemp. */
     private void handleIntent(Intent i) {
+        // --es watch test — показать пробное предупреждение (проверка вида), --es watch off|on — выключить/включить
+        if (i != null && i.hasExtra("watch")) {
+            String w = i.getStringExtra("watch");
+            Intent s = new Intent(this, WatchService.class);
+            if ("off".equals(w)) { prefs().edit().putBoolean("watch", false).apply(); stopService(s); }
+            else { prefs().edit().putBoolean("watch", true).apply(); startForegroundService("test".equals(w) ? s.setAction("test") : s); }
+            if (i.getBooleanExtra("finish", false)) finish();
+            return;
+        }
         if (i == null || !i.hasExtra("overlay")) return;
         boolean on = "on".equals(i.getStringExtra("overlay"));
         Intent s = new Intent(this, OverlayService.class);
@@ -48,13 +59,17 @@ public class MainActivity extends Activity {
 
     @Override protected void onStart() { super.onStart(); monitor.acquire(); }
     @Override protected void onStop() { monitor.release(); super.onStop(); }
-    // пока открыт полный экран, окно поверх не нужно — прячем его, чтобы не закрывало заголовок
-    @Override protected void onResume() { super.onResume(); OverlayService.setHidden(true); }
-    @Override protected void onPause() { OverlayService.setHidden(false); super.onPause(); }
+    // пока открыт полный экран, компактный режим не нужен — прячем его, чтобы не закрывал заголовок
+    @Override protected void onResume() { super.onResume(); OverlayService.setHidden(true); WatchService.appVisible = true; }
+    @Override protected void onPause() { WatchService.appVisible = false; OverlayService.setHidden(false); super.onPause(); }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) { finish(); return true; }
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            // «Назад» сначала закрывает окно «Поддержать» (QR), и только потом выходит из приложения
+            web.evaluateJavascript("typeof onBack==='function'&&onBack()", v -> { if (!"true".equals(v)) finish(); });
+            return true;
+        }
         return super.onKeyDown(keyCode, event);
     }
 
@@ -82,6 +97,31 @@ public class MainActivity extends Activity {
         @JavascriptInterface public boolean overlayOn() { return OverlayService.running; }
 
         @JavascriptInterface public String corner() { return prefs().getString("corner", "tr"); }
+
+        /** Настройки фоновых предупреждений: {"watch":true,"w_cpu":true,…} */
+        @JavascriptInterface public String warnPrefs() {
+            StringBuilder sb = new StringBuilder("{\"watch\":").append(prefs().getBoolean("watch", true));
+            for (String k : WatchService.KEYS) sb.append(",\"").append(k).append("\":").append(prefs().getBoolean(k, true));
+            return sb.append('}').toString();
+        }
+
+        /** key = "all" — включить/выключить все предупреждения сразу. Если не включено ни одно,
+         *  фоновая служба останавливается и после выхода приложение ничего не делает. */
+        @JavascriptInterface public void setWarn(String key, boolean on) {
+            SharedPreferences.Editor e = prefs().edit();
+            if ("all".equals(key)) for (String k : WatchService.KEYS) e.putBoolean(k, on);
+            else e.putBoolean(key, on);
+            e.apply();
+            boolean any = false;
+            for (String k : WatchService.KEYS) any |= prefs().getBoolean(k, true);
+            prefs().edit().putBoolean("watch", any).apply();
+            Intent s = new Intent(MainActivity.this, WatchService.class);
+            if (any) startForegroundService(s); else stopService(s);
+        }
+
+        @JavascriptInterface public void testWarn() {
+            startForegroundService(new Intent(MainActivity.this, WatchService.class).setAction("test"));
+        }
 
         @JavascriptInterface public void toggleOverlay() {
             Intent i = new Intent(MainActivity.this, OverlayService.class);

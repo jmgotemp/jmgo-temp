@@ -41,7 +41,7 @@ public final class Monitor {
     private static final int T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
     private static final int IDX_TEMPS = 0x105, IDX_FAN_DUTY = 0xa7, IDX_FAN_STATUS = 0x76,
             IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334,
-            IDX_BRIGHTNESS_MODE = 0x64,
+            IDX_BRIGHTNESS_MODE = 0x64, IDX_LENS = 0x138, // температура объектива (getString), −999 — нет датчика
             IDX_APERTURE = 0x213; // диафрагма: F × 100 (как в «Клоне настроек»); ≤ 0 — нет диафрагмы (N5 Pro)
 
     private static Monitor instance;
@@ -61,7 +61,7 @@ public final class Monitor {
     private IBinder src;
     private JSONObject limits;
     private Thread thread;
-    private int users;
+    private int users, fastUsers;
     private long lastHistory;
     private final long sessionStart = System.currentTimeMillis() / 1000;
     private Double maxDmd, maxLaser; private Integer maxCpu;
@@ -75,8 +75,13 @@ public final class Monitor {
     public synchronized void addListener(Listener l) { listeners.add(l); }
     public synchronized void removeListener(Listener l) { listeners.remove(l); }
 
-    public synchronized void acquire() {
+    public synchronized void acquire() { acquire(true); }
+    public synchronized void release() { release(true); }
+
+    /** fast = раз в секунду (экран приложения, окно поверх фильма); иначе раз в 5 с — фоновые предупреждения. */
+    public synchronized void acquire(boolean fast) {
         users++;
+        if (fast) { fastUsers++; notifyAll(); }
         if (thread == null) {
             thread = new Thread(this::loop, "jmgo-monitor");
             thread.setDaemon(true);
@@ -84,8 +89,9 @@ public final class Monitor {
         }
     }
 
-    public synchronized void release() {
+    public synchronized void release(boolean fast) {
         users = Math.max(0, users - 1);
+        if (fast) fastUsers = Math.max(0, fastUsers - 1);
         if (users == 0 && thread != null) { thread.interrupt(); thread = null; }
     }
 
@@ -126,7 +132,7 @@ public final class Monitor {
                 ls = new ArrayList<>(listeners);
             }
             for (Listener l : ls) { try { l.onUpdate(snap); } catch (Throwable ignored) {} }
-            try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+            try { synchronized (this) { wait(fastUsers > 0 ? 1000 : 5000); } } catch (InterruptedException e) { return; }
         }
     }
 
@@ -253,6 +259,21 @@ public final class Monitor {
         return Build.MODEL;
     }
 
+    /** Коды, у которых название известно точно: N5 — проверено на проекторах, остальные — Google Play / FCC. */
+    private static final String[][] NAMES = {
+            {"K981CN", "JMGO N5 Pro"}, {"KD11CN", "JMGO N5S Ultra Max"}, {"KD11AX", "JMGO IRIS Ultra Max"},
+            {"K931AO", "JMGO N3 Ultimate"}, {"S70A", "JMGO N1"}, {"H80A", "JMGO N1 Pro"},
+            {"K92A", "JMGO N1S Infinity"}, {"K93A", "JMGO N1S Pro"}, {"K610AO", "JMGO N1S SE"},
+            {"T91A", "JMGO O2S Ultra"}, {"m7642_JmGO_H79P", "JMGO O1"}, {"m7642_JmGO_T72A", "JMGO O1 Pro"}};
+
+    private static String modelName(String model) {
+        String sale = prop("vendor.jmgo.internal.salename").trim();
+        if (!sale.isEmpty()) return sale.toUpperCase(Locale.ROOT).startsWith("JMGO") ? sale : "JMGO " + sale;
+        for (String c : new String[]{model, Build.MODEL, Build.DEVICE})
+            for (String[] n : NAMES) if (n[0].equalsIgnoreCase(c)) return n[1];
+        return "JMGO " + model;
+    }
+
     private static String prop(String key) {
         try {
             Class<?> sp = Class.forName("android.os.SystemProperties");
@@ -276,17 +297,26 @@ public final class Monitor {
             if (xml != null) {
                 List<double[]> check = rows(xml, "SYSTEM_CHECK_TEMPERATURE_CONFIG");
                 Double ls = null, ld = null;
+                boolean hasDmd = false;
+                laserIdx.clear();
                 for (double[] r : check) {
                     if (r.length < 2) continue;
                     int idx = (int) r[0];
-                    if (idx == 7) l.put("dmd_shutdown", r[1]);
+                    if (idx == 7) { l.put("dmd_shutdown", r[1]); hasDmd = true; }
                     else if (idx == 10 || idx == 11 || idx == 12 || idx == 14) {
+                        laserIdx.add(idx);
                         ls = ls == null ? r[1] : Math.min(ls, r[1]);
                         if (r.length > 2 && r[2] > 0) ld = ld == null ? r[2] : Math.min(ld, r[2]);
                     }
                 }
-                if (ls != null) l.put("laser_shutdown", ls);
-                if (ld != null) l.put("laser_derate", ld);
+                // у модели нет такого датчика в самопроверке — порога нет (не подставляем значения N5 Pro)
+                if (!hasDmd) l.remove("dmd_shutdown");
+                if (ls != null) l.put("laser_shutdown", ls); else l.remove("laser_shutdown");
+                if (ld != null) l.put("laser_derate", ld); else l.remove("laser_derate");
+                for (double v : list(xml, "INTELLIGENT_FAN_CONTROL")) {
+                    int idx = (int) v;
+                    if (idx == 10 || idx == 11 || idx == 12 || idx == 14) laserIdx.add(idx);
+                }
                 List<double[]> pid = rows(xml, "FAN_PID_CONTROL_CONFIG");
                 if (!pid.isEmpty()) {
                     JSONArray p = new JSONArray(), fx = new JSONArray();
@@ -312,29 +342,37 @@ public final class Monitor {
                     l.put("value_max", a);
                 }
                 l.put("from_firmware", true);
+                if (configName != null) l.put("config", configName);
             }
         } catch (Exception ignored) {}
         limits = l;
         return l;
     }
 
+    private String configName;
+
+    /** Конфиг собираем как сам hippo: общий файл + папка модели + уточнения по Build.DEVICE / ro.boot.dlpModel / ревизии железа. */
     private String readHippoConfig() {
         try {
             ApplicationInfo ai = ctx.getPackageManager().getApplicationInfo("com.jmgo.hippo", 0);
-            try (ZipFile z = new ZipFile(ai.sourceDir)) {
-                ZipEntry e = z.getEntry("assets/" + model() + "/hippo_configs.xml");
-                if (e == null) return null;
-                try (InputStream in = z.getInputStream(e)) {
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    byte[] buf = new byte[8192]; int n;
-                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-                    return bo.toString("UTF-8");
-                }
+            HippoConfig.Result r = HippoConfig.load(ai.sourceDir,
+                    new String[]{prop("ro.jmgo.product.device"), Build.DEVICE, model(), Build.MODEL},
+                    Build.DEVICE, prop("ro.boot.dlpModel"), prop("ro.boot.hardware_version"));
+            if (r == null) return null;
+            StringBuilder n = new StringBuilder(r.dir);
+            for (String f : r.files) {
+                int i = f.indexOf("hippo_configs-");
+                if (f.startsWith(r.dir + "/") && i >= 0) n.append(" + ").append(f.substring(i + 14, f.length() - 4));
             }
+            configName = n.toString();
+            return r.xml;
         } catch (Exception e) { return null; }
     }
 
     private double[] dmdMux = new double[0], dmdDlpCfg = new double[0];
+    /** Индексы датчиков лазера из конфига модели (10, 11, 12, 14 = модули 1–4); пусто — показываем все, что отдал сервис. */
+    private final java.util.Set<Integer> laserIdx = new java.util.TreeSet<>();
+    private static final int[] LASER_SENSOR = {0, 10, 11, 12, 14};
     private final List<int[]> modeCurrents = new ArrayList<>();
 
     private static double[] list(String xml, String key) {
@@ -360,6 +398,8 @@ public final class Monitor {
     /** Повторяет TemperaturePolicy.isDmdTemperatureByDlp() из hippo. */
     private boolean dmdByDlp(String dlpVersion) {
         double[] x = dmdMux;
+        // sar −2 (Iris Ultra/Ultra Max, hippo 9.4.x): DMD всегда из DLP, без проверки версии
+        if (x.length > 0 && x[0] == -2) return true;
         if (x.length == 0 || x[0] < 0) return false;
         if (x.length >= 7 && x[6] > 0) {
             int ver = dlpVersionInt(dlpVersion);
@@ -427,7 +467,7 @@ public final class Monitor {
         String model = model();
         s.put("ts", now());
         s.put("model", model);
-        s.put("name", "K981CN".equals(model) ? "JMGO N5 Pro" : "KD11CN".equals(model) ? "JMGO N5S Ultra Max" : "JMGO " + model);
+        s.put("name", modelName(model));
         s.put("firmware_version", Build.VERSION.INCREMENTAL);
         String dlpv = readFile("/sys/class/jmgo_dlp/version");
         if (dlpv != null) s.put("dlp_version", dlpv);
@@ -443,7 +483,12 @@ public final class Monitor {
         while (keys.hasNext()) {
             String k = keys.next();
             Matcher m = lp.matcher(k);
-            if (m.matches()) { Double v = num(t.optString(k)); if (v != null) lasers.put(Integer.parseInt(m.group(1)), v); }
+            if (m.matches()) {
+                int n = Integer.parseInt(m.group(1));
+                // 3-лазерные модели: модуль, которого нет в конфиге, не показываем
+                if (!laserIdx.isEmpty() && n >= 1 && n <= 4 && !laserIdx.contains(LASER_SENSOR[n])) continue;
+                Double v = num(t.optString(k)); if (v != null) lasers.put(n, v);
+            }
             else if (k.equals("dmd_temperatures")) dmd = num(t.optString(k));
         }
         JSONObject th = new JSONObject();
@@ -454,6 +499,8 @@ public final class Monitor {
         th.put("dmd", dmd == null ? JSONObject.NULL : dmd);
         th.put("lasers", la);
         th.put("laser_max", lmax == null ? JSONObject.NULL : lmax);
+        // объектив: датчик у оптического блока (hippo getLensTemperature), без порога и без влияния на защиту
+        try { Double lens = num(getString(IDX_LENS)); if (lens != null) th.put("lens", lens); } catch (Exception ignored) {}
         int[] duty = getArray(IDX_FAN_DUTY);
         if (duty != null) { JSONArray d = new JSONArray(); for (int v : duty) d.put(v); th.put("fan_duty", d); }
         Integer fanMode = getInt(IDX_FAN_MODE);
@@ -464,15 +511,14 @@ public final class Monitor {
         if (fs != null) th.put("fan_status", fs);
         s.put("thermal", th);
         JSONObject limOut = new JSONObject(lim.toString());
-        limOut.put("dmd_source", "ntc");
-        if (dmdDlpCfg.length > 0 && dmdDlpCfg[0] > 0 && dmdByDlp(dlpv)) {
-            limOut.put("dmd_shutdown", dmdDlpCfg[0]);
-            limOut.put("dmd_source", "dlp");
-        }
+        boolean byDlp = dmdByDlp(dlpv);
+        // KD11CN: свой порог DMD_TEMPERATURE_CHECK_CONFIG; KD11AX: его нет, порог уже в строке {7, 71, -1}
+        limOut.put("dmd_source", byDlp ? "dlp" : "ntc");
+        if (byDlp && dmdDlpCfg.length > 0 && dmdDlpCfg[0] > 0) limOut.put("dmd_shutdown", dmdDlpCfg[0]);
         s.put("limits", limOut);
         lim = limOut;
 
-        // обороты вентиляторов (если прошивка даёт приложению читать файл)
+        // обороты вентиляторов (если прошивка дает приложению читать файл)
         String tach = readFile("/sys/class/jmgo_fan/tachometer");
         if (tach != null) {
             String[] p = tach.trim().split("\\s+");
@@ -487,7 +533,7 @@ public final class Monitor {
             } catch (Exception ignored) {}
         }
 
-        // яркость: уровень из меню и режим берём у сервиса JMGO, ток лазеров — из драйвера DLP
+        // яркость: уровень из меню и режим берем у сервиса JMGO, ток лазеров — из драйвера DLP
         Integer bPct = getInt(IDX_BRIGHTNESS);
         Integer bMode = getInt(IDX_BRIGHTNESS_MODE);
         if (bPct != null && bPct >= 0) s.put("brightness_pct", bPct);
@@ -561,6 +607,7 @@ public final class Monitor {
         s.put("mem_total", mi.totalMem / 1024); s.put("mem_avail", mi.availMem / 1024);
         StatFs st = new StatFs(Environment.getDataDirectory().getPath());
         s.put("storage_free_kb", st.getAvailableBytes() / 1024);
+        s.put("storage_total_kb", st.getTotalBytes() / 1024);
         try {
             Display disp = ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
             Display.Mode mode = disp.getMode();
