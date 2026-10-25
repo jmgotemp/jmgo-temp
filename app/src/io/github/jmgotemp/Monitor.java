@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Random;
 import java.util.Locale;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
@@ -69,6 +70,13 @@ public final class Monitor {
     private Long throttleSince, throttleFirst;
     private Integer lastFan1, lastFan2;
     private int zeroFan1, zeroFan2;
+    /** Обороты читаем не чаще раза в 5 с (± 0,5 с) и только для экрана / компактного режима.
+     *  На N5S Ultra Max и IRIS каждое чтение /sys/class/jmgo_fan/tachometer перезапускает общий замер
+     *  оборотов, и прошивка в своей проверке вентиляторов может получить ложный 0 об/мин (ошибка 4001). */
+    private static final long TACH_PERIOD_MS = 5000;
+    private long nextTachAt;
+    private final Random rnd = new Random();
+    private String dlpVersion;
 
     private Monitor(Context c) { ctx = c; }
 
@@ -81,7 +89,7 @@ public final class Monitor {
     /** fast = раз в секунду (экран приложения, окно поверх фильма); иначе раз в 5 с — фоновые предупреждения. */
     public synchronized void acquire(boolean fast) {
         users++;
-        if (fast) { fastUsers++; notifyAll(); }
+        if (fast) { fastUsers++; nextTachAt = 0; notifyAll(); }
         if (thread == null) {
             thread = new Thread(this::loop, "jmgo-monitor");
             thread.setDaemon(true);
@@ -469,7 +477,9 @@ public final class Monitor {
         s.put("model", model);
         s.put("name", modelName(model));
         s.put("firmware_version", Build.VERSION.INCREMENTAL);
-        String dlpv = readFile("/sys/class/jmgo_dlp/version");
+        // версия DLP не меняется до перезагрузки: читаем один раз (это 3 запроса в DLP с паузами)
+        if (dlpVersion == null) dlpVersion = readFile("/sys/class/jmgo_dlp/version");
+        String dlpv = dlpVersion;
         if (dlpv != null) s.put("dlp_version", dlpv);
         s.put("dlp_model", prop("vendor.jmgo.dlp.model"));
         s.put("uptime", SystemClock.elapsedRealtime() / 1000);
@@ -507,8 +517,7 @@ public final class Monitor {
         th.put("fan_mode", fanMode != null && fanMode == 0 ? "PID" : "manual");
         Integer ov = getInt(IDX_OVERLAP_LEVEL);
         th.put("overlap_level", ov == null ? 0 : ov);
-        Integer fs = getInt(IDX_FAN_STATUS);
-        if (fs != null) th.put("fan_status", fs);
+        // статус вентиляторов (0x76) не запрашиваем: прошивка при этом еще раз читает тахометр
         s.put("thermal", th);
         JSONObject limOut = new JSONObject(lim.toString());
         boolean byDlp = dmdByDlp(dlpv);
@@ -518,9 +527,18 @@ public final class Monitor {
         s.put("limits", limOut);
         lim = limOut;
 
-        // обороты вентиляторов (если прошивка дает приложению читать файл)
-        String tach = readFile("/sys/class/jmgo_fan/tachometer");
-        if (tach != null) {
+        // обороты вентиляторов (если прошивка дает приложению читать файл): раз в 5 с и только когда их видно
+        String tach = null;
+        long nowMs = SystemClock.elapsedRealtime();
+        if (fastUsers > 0 && nowMs >= nextTachAt) {
+            nextTachAt = nowMs + TACH_PERIOD_MS - 500 + rnd.nextInt(1001);
+            tach = readFile("/sys/class/jmgo_fan/tachometer");
+        }
+        if (tach == null) {
+            // между чтениями показываем последнее значение; в фоне (только предупреждения) оборотов нет
+            if (fastUsers > 0 && lastFan1 != null) s.put("fan1", lastFan1);
+            if (fastUsers > 0 && lastFan2 != null) s.put("fan2", lastFan2);
+        } else {
             String[] p = tach.trim().split("\\s+");
             try {
                 // одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка

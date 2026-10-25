@@ -13,27 +13,33 @@
 IP:порт необязателен: скрипт возьмет уже подключенный проектор или найдет его в сети сам.
 
 Что показывает:
-  * температуру матрицы DMD и лазерных модулей — их измеряет системный сервис JMGO
-    (hippo_server) и раз в 2–10 с пишет в logcat; читаем поток лога, root не нужен;
+  * температуру матрицы DMD и лазерных модулей, объектива и мощность вентиляторов — у системного
+    сервиса JMGO, так же как приложение JMGO Temp: скрипт на время работы копирует на проектор
+    маленький помощник (jmgotemp_probe.dex, ~5 КБ, только чтение), запускает его через adb и сразу
+    удаляет файл; помощник сам завершается, когда скрипт закрыт. Если помощник не запустился —
+    температуры берутся из logcat hippo_server (там они есть только при подробном журнале прошивки);
   * пороги защиты (снижение яркости / отключение) и цели вентиляторов — берутся прямо
     из конфигурации прошивки (hippo_configs.xml внутри APK com.jmgo.hippo);
   * уровень яркости и ток лазеров R/G/B (из /sys/class/jmgo_dlp/brightness);
   * процессор, вентиляторы, память, накопитель, вывод изображения.
 
-Ничего на проекторе не меняет: только чтение.
+Ничего на проекторе не меняет: только чтение (временный файл помощника удаляется сразу после запуска).
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import http.server
 import json
 import math
 import os
+import random
 import re
 import shutil
 import socketserver
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -64,7 +70,7 @@ def find_adb() -> str:
     return "adb"
 
 
-VERSION = "1.4"  # та же нумерация, что у APK JMGO Temp
+VERSION = "1.4.1"  # та же нумерация, что у APK JMGO Temp
 
 ADB = find_adb()
 TARGET = ""  # IP:порт из командной строки (необязательно)
@@ -132,7 +138,9 @@ echo "incremental=$(getprop ro.build.version.incremental)"
 echo "fingerprint=$(getprop ro.build.fingerprint)"
 echo "thermal_type=$(val /sys/class/thermal/thermal_zone0/type)"
 echo "temp=$(val /sys/class/thermal/thermal_zone0/temp)"
-echo "fan=$(val /sys/class/jmgo_fan/tachometer)"
+# обороты — не каждый опрос: на N5S Ultra Max / IRIS чтение тахометра перезапускает общий замер,
+# и проверка вентиляторов прошивки может получить ложный 0 об/мин (ошибка 4001)
+[ "$READ_FAN" = 1 ] && echo "fan=$(val /sys/class/jmgo_fan/tachometer)"
 echo "freq=$(val /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
 echo "freq_max=$(val /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)"
 echo "freq_cap=$(val /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq)"
@@ -153,7 +161,7 @@ for z in /sys/class/thermal/thermal_zone*; do
 done
 echo "dlp_brightness=$(val /sys/class/jmgo_dlp/brightness)"
 echo "dlp_display_size=$(val /sys/class/jmgo_dlp/display_size)"
-echo "dlp_version=$(val /sys/class/jmgo_dlp/version)"
+[ "$READ_DLPV" = 1 ] && echo "dlp_version=$(val /sys/class/jmgo_dlp/version)"
 echo "dlp_source=$(val /sys/class/jmgo_dlp/source)"
 echo "dlp_enable_vrr=$(val /sys/class/jmgo_dlp/enable_vrr)"
 echo "dlp_model=$(getprop vendor.jmgo.dlp.model)"
@@ -535,8 +543,119 @@ def parse_log_line(line: str) -> None:
         THERMAL["dev_ts"] = dev_ts
 
 
+# Помощник для проектора: собран из probe/webprobe/JmgoTempProbe.java (javac --release 11 + d8 --min-api 28).
+# Раз в 2 с печатает JSON: getString(0x105) температуры, getString(0x138) объектив, getArray(0xa7) мощность
+# вентиляторов, get(0x70) режим вентиляторов, get(0x334) Overlap. Только чтение, тахометр не трогает.
+PROBE_DEX_B64 = """
+ZGV4CjAzOQAOKVOejTy5Se4/fYGFYq6g6YJ7gyBnFOHMEwAAcAAAAHhWNBIAAAAAAAAAAPwSAAByAAAAcAAAABsAAAA4AgAAHQAA
+AKQCAAAPAAAAAAQAACsAAAB4BAAAAQAAANAFAADcDQAA8AUAADgMAAA7DAAASQwAAFkMAABuDAAAeQwAAIcMAACVDAAAnwwAAKwM
+AAC3DAAAvwwAAMIMAADHDAAAygwAANgMAADoDAAA/QwAAAsNAAAZDQAAIw0AADANAAA7DQAAQA0AAEQNAABHDQAAWw0AAF4NAABi
+DQAAZg0AAGsNAABvDQAAgA0AAIQNAACJDQAAnw0AALQNAADQDQAA5w0AAPoNAAARDgAANA4AAEkOAABbDgAAfg4AAJIOAACmDgAA
+wQ4AANUOAADpDgAABQ8AAAoPAAARDwAAHg8AACwPAAAvDwAAMw8AADcPAAA7DwAAPg8AAEUPAABIDwAATA8AAFAPAABkDwAAeQ8A
+AI4PAACWDwAAsQ8AALkPAAC/DwAAyw8AAPsPAAArEAAANBAAAEQQAABXEAAAXBAAAGUQAABtEAAAdxAAAIoQAACSEAAAnhAAAKkQ
+AACxEAAAwBAAAM8QAADVEAAA2hAAAN8QAADnEAAA8xAAAPkQAAABEQAABhEAABARAAAZEQAAIBEAAC8RAAA4EQAARBEAAFYRAABf
+EQAAZhEAAHMRAAB9EQAAhxEAAI4RAACXEQAAoREAALYRAAC+EQAAwREAAAsAAAANAAAAGAAAAB8AAAAiAAAAIwAAACQAAAAlAAAA
+JgAAACcAAAAoAAAAKQAAACoAAAArAAAALAAAAC0AAAAuAAAALwAAADAAAAAxAAAANgAAADoAAAA9AAAAPgAAAD8AAABAAAAAQQAA
+AA0AAAABAAAAAAAAABYAAAABAAAA3AsAABcAAAABAAAA5AsAABgAAAACAAAAAAAAABoAAAAEAAAAAAAAABoAAAAFAAAAAAAAAB0A
+AAAFAAAA3AsAACAAAAAIAAAA5AsAABwAAAALAAAA7AsAACEAAAAOAAAA9AsAABoAAAAPAAAAAAAAABwAAAAPAAAA7AsAACAAAAAP
+AAAA/AsAACAAAAAPAAAA5AsAACEAAAAPAAAABAwAABsAAAAQAAAADAwAABwAAAAQAAAA7AsAAB4AAAAQAAAAFAwAACAAAAAQAAAA
+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
+rgAMDhoEAwBuICYATgAMDm4gJgC+AAwOGgQBAG4gJgBOAAwObiAmAM4ADA5uICYADgAMDm4QJwAOAAwOKDANDhIEaQQNAHEAKAAA
+AAsEcRAgAA4ADA5xEAcADgAMDiIGEABwECEABgBuICYAFgAMBm4wJQBGBQwEGgUEAG4gJgBUAAwEbiAmAOQADA5uICYADgAMDm4Q
+JwAOAAwOYgQOAG4gFADkAGIODgBuEBMADgAKDjgOAwAOAHEgKQAyACkAFP8AAAgAAAARAAEAIQAAAKsABAACAQ0eAQnNARYADgES
+D9ItiFpaPEstHmcciAJ3hgAlAgAADohaPGk8HjoeADsBAA7hPHgBEw+0ADABAA4BEQ8ANQEADgEWDwBEAQAOeMN4ARYPSHZAAA0A
+DgBOAQAOSwEbEgEUD0tpaWlpaWlpAWsSGh48ASsQWpY8AAAAAgAAAAEAAQABAAAADwAAAAEAAAABAAAAAgAAAA4AGQABAAAADgAA
+AAIAAAAPABkAAQAAAAAAAAABAAAAAgAAAAIAAAAPABgAAQAAABoAAAAEAAAAAQAFAAUAAQABIgAMLCJhcGVydHVyZSI6AA4sImJy
+aWdodG5lc3MiOgATLCJicmlnaHRuZXNzX21vZGUiOgAJLCJlcnJvciI6AAwsImZhbl9kdXR5IjoADCwiZmFuX21vZGUiOgAILCJs
+ZW5zIjoACywib3ZlcmxhcCI6AAksInRlbXBzIjoABjxpbml0PgABQwADRExQAAFJAAxJRFhfQVBFUlRVUkUADklEWF9CUklHSFRO
+RVNTABNJRFhfQlJJR0hUTkVTU19NT0RFAAxJRFhfRkFOX0RVVFkADElEWF9GQU5fTU9ERQAISURYX0xFTlMAC0lEWF9PVkVSTEFQ
+AAlJRFhfVEVNUFMAA0lJSQACSUwAAUoAEkptZ29UZW1wUHJvYmUuamF2YQABTAACTEMAAkxJAANMSUkAAkxKAA9MSm1nb1RlbXBQ
+cm9iZTsAAkxMAANMTEwAFExhbmRyb2lkL29zL0lCaW5kZXI7ABNMYW5kcm9pZC9vcy9QYXJjZWw7ABpMZGFsdmlrL2Fubm90YXRp
+b24vVGhyb3dzOwAVTGphdmEvaW8vUHJpbnRTdHJlYW07ABFMamF2YS9sYW5nL0NsYXNzOwAVTGphdmEvbGFuZy9FeGNlcHRpb247
+ACFMamF2YS9sYW5nL0lsbGVnYWxTdGF0ZUV4Y2VwdGlvbjsAE0xqYXZhL2xhbmcvSW50ZWdlcjsAEExqYXZhL2xhbmcvTWF0aDsA
+IUxqYXZhL2xhbmcvTnVtYmVyRm9ybWF0RXhjZXB0aW9uOwASTGphdmEvbGFuZy9PYmplY3Q7ABJMamF2YS9sYW5nL1N0cmluZzsA
+GUxqYXZhL2xhbmcvU3RyaW5nQnVpbGRlcjsAEkxqYXZhL2xhbmcvU3lzdGVtOwASTGphdmEvbGFuZy9UaHJlYWQ7ABpMamF2YS9s
+YW5nL3JlZmxlY3QvTWV0aG9kOwADU1lTAAVUX0dFVAALVF9HRVRfQVJSQVkADFRfR0VUX1NUUklORwABVgACVkkAAlZKAAJWTAAB
+WgAFWklMTEkAAVsAAltDAAJbSQASW0xqYXZhL2xhbmcvQ2xhc3M7ABNbTGphdmEvbGFuZy9PYmplY3Q7ABNbTGphdmEvbGFuZy9T
+dHJpbmc7AAZcdSUwNHgAGWFuZHJvaWQub3MuU2VydmljZU1hbmFnZXIABmFwcGVuZAAEY2FsbAAKY2hlY2tFcnJvcgAuY29tLmpt
+Z28ubWlkZGxld2FyZS5kbHAuSUptR09EbHBNYW5hZ2VyU2VydmljZQAuY29tLmptZ28ubWlkZGxld2FyZS5zZXJ2aWNlLklKbUdP
+U3lzdGVtU2VydmljZQAHY29ubmVjdAAOY3JlYXRlSW50QXJyYXkAEWN1cnJlbnRUaW1lTWlsbGlzAANkbHAAB2Zvck5hbWUABmZv
+cm1hdAAIZ2V0QXJyYXkAEWdldERlY2xhcmVkTWV0aG9kAAZnZXRJbnQACmdldFNlcnZpY2UACWdldFN0cmluZwAGaW52b2tlAA1p
+c0JpbmRlckFsaXZlAA1qbWdvbWlkZGxlLTAxAARtYWluAANtYXgAA21pbgAGbm9fZGxwAApub19zZXJ2aWNlAARudWxsAAZvYnRh
+aW4AA291dAAIcGFyc2VJbnQAB3ByaW50bG4ABXF1b3RlAA1yZWFkRXhjZXB0aW9uAAdyZWFkSW50AApyZWFkU3RyaW5nABByZWFk
+U3Ryb25nQmluZGVyAAdyZWN5Y2xlAAVzbGVlcAALdG9DaGFyQXJyYXkACHRvU3RyaW5nAAh0cmFuc2FjdAAFdmFsdWUAB3ZhbHVl
+T2YACHdyaXRlSW50ABN3cml0ZUludGVyZmFjZVRva2VuAAZ7InRzIjoAAX0AnAF+fkQ4eyJiYWNrZW5kIjoiZGV4IiwiY29tcGls
+YXRpb24tbW9kZSI6ImRlYnVnIiwiaGFzLWNoZWNrc3VtcyI6ZmFsc2UsIm1pbi1hcGkiOjI4LCJzaGEtMSI6ImFiYWFiNDY5YjVl
+YmQ0ZGQyYmI5MWJhMGVkNmY0NTI3N2ZhYWU0Y2EiLCJ2ZXJzaW9uIjoiOC42LjItZGV2In0AAgYBaxwBGAkOAAgAABgBGAEYARgB
+GAEYARgBGAEYARgBGAEYARgBCACBgASIEgEIzA0BCPALAQjIDgEI1A8BCJwQAQmgEgEI6BANF0ckEwIkAAIEZCSnAARwJDgBJDQD
+JAUBF0gEAgQGBAQAAQAAAGASAAAAAAAAAAAAAAMAAAAAAAAAAQAAAMwSAAACAAAAzBIAAAYAAADMEgAAEQAAAAAAAAABAAAAAAAA
+AAEAAAByAAAAcAAAAAIAAAAbAAAAOAIAAAMAAAAdAAAApAIAAAQAAAAPAAAAAAQAAAUAAAArAAAAeAQAAAYAAAABAAAA0AUAAAEg
+AAAIAAAA8AUAAAMgAAAIAAAAaAsAAAEQAAALAAAA3AsAAAIgAAByAAAAOAwAAAQgAAABAAAAYBIAAAAgAAABAAAAaBIAAAUgAAAB
+AAAAqhIAAAMQAAABAAAAzBIAAAYgAAABAAAA1BIAAAAQAAABAAAA/BIAAA==
+"""
+PROBE_REMOTE = "/data/local/tmp/jmgotemp_probe.dex"
+PROBE_CMD = f"CLASSPATH={PROBE_REMOTE} app_process /system/bin JmgoTempProbe 2"
+
+
+def _num(v) -> float | None:
+    try:
+        return _valid(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_probe_line(line: str) -> bool:
+    """Строка помощника -> THERMAL. True, если в ней были температуры."""
+    try:
+        d = json.loads(line)
+        t = json.loads(d.get("temps") or "{}") if isinstance(d, dict) else {}
+    except ValueError:
+        return False
+    if not isinstance(t, dict) or not t:
+        return False
+    upd: dict = {"dmd": _num(t.get("dmd_temperatures")), "lens": _num(d.get("lens")), "source": "probe"}
+    for n in range(1, 5):
+        if f"laser{n}_temperatures" in t:
+            upd[f"laser{n - 1}"] = _num(t[f"laser{n}_temperatures"])
+    duty = d.get("fan_duty")
+    if isinstance(duty, list) and duty:
+        upd["fan_duty"] = [int(x) for x in duty]
+    if isinstance(d.get("fan_mode"), int) and d["fan_mode"] >= 0:
+        upd["fan_mode"] = "PID" if d["fan_mode"] == 0 else "manual"
+    if isinstance(d.get("overlap"), int) and d["overlap"] >= 0:
+        upd["overlap_level"] = d["overlap"]
+    with THERMAL_LOCK:
+        THERMAL.update(upd)
+        THERMAL["recv_ts"] = time.time()
+        THERMAL["dev_ts"] = (d.get("ts") or 0) / 1000 or time.time()
+    return True
+
+
 class LogWatcher:
-    """Держит открытым `adb logcat -s hippo_server:V` и разбирает строки на лету."""
+    """Источник DMD/лазеров: помощник на проекторе (как приложение), запасной — `adb logcat -s hippo_server:V`."""
 
     def __init__(self) -> None:
         self.serial = ""
@@ -560,12 +679,66 @@ class LogWatcher:
             self.stop_evt.set()
         p = self.proc
         if p and p.poll() is None:
-            p.kill()
+            p.kill()  # помощник на проекторе завершится сам: adb закрыл его вывод
         self.proc = None
         self.serial = ""
 
     def _run(self, serial: str, stop: threading.Event) -> None:
+        fails = 0
         while not stop.is_set():
+            if fails < 3:
+                fails = 0 if self._run_probe(serial, stop) else fails + 1
+            else:
+                self._run_logcat(serial, stop)
+                fails = 2  # после журнала — еще одна попытка помощника
+            stop.wait(3)
+
+    def _run_probe(self, serial: str, stop: threading.Event) -> bool:
+        """Копирует помощник, запускает, удаляет файл после первой строки. True — данные шли."""
+        got = False
+        tmp = ""
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=".dex")
+            with os.fdopen(fd, "wb") as f:
+                f.write(base64.b64decode("".join(PROBE_DEX_B64.split())))
+            run([ADB, "-s", serial, "push", tmp, PROBE_REMOTE], timeout=20)
+            p = subprocess.Popen(
+                [ADB, "-s", serial, "shell", PROBE_CMD],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
+            )
+            self.proc = p
+            assert p.stdout is not None
+            for line in p.stdout:
+                if stop.is_set():
+                    break
+                if parse_probe_line(line) and not got:
+                    got = True
+                    try:  # помощник уже загружен в память — файл больше не нужен
+                        run([ADB, "-s", serial, "shell", "rm", "-f", PROBE_REMOTE], timeout=10)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if p.poll() is None:
+                p.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            if not got:
+                try:
+                    run([ADB, "-s", serial, "shell", "rm", "-f", PROBE_REMOTE], timeout=10)
+                except Exception:  # noqa: BLE001
+                    pass
+        return got
+
+    def _run_logcat(self, serial: str, stop: threading.Event) -> None:
+        """Запасной путь (2 мин), потом снова пробуем помощника."""
+        if not stop.is_set():
+            killer = None
             try:
                 p = subprocess.Popen(
                     [ADB, "-s", serial, "logcat", "-v", "epoch", "-s", "hippo_server:V"],
@@ -573,6 +746,9 @@ class LogWatcher:
                     text=True, encoding="utf-8", errors="replace", bufsize=1,
                 )
                 self.proc = p
+                killer = threading.Timer(120, p.kill)
+                killer.daemon = True
+                killer.start()
                 assert p.stdout is not None
                 for line in p.stdout:
                     if stop.is_set():
@@ -582,7 +758,9 @@ class LogWatcher:
                     p.kill()
             except Exception:  # noqa: BLE001
                 pass
-            stop.wait(3)
+            finally:
+                if killer:
+                    killer.cancel()
 
 
 WATCHER = LogWatcher()
@@ -617,8 +795,18 @@ def menu_level(pct: int) -> int:
     return max(1, min(10, int(pct * 9 / 100 + 0.5) + 1))
 
 
+FAN_PERIOD = 10.0  # с: как часто читать обороты (± 1 с, чтобы не совпадать с проверкой прошивки раз в 10 с)
+POLL_STATE: dict = {"serial": "", "next_fan": 0.0, "fans": [], "dlp_version": ""}
+
+
 def parse_snapshot(serial: str) -> dict:
-    raw = adb_shell(serial)
+    st = POLL_STATE
+    if st["serial"] != serial:
+        st.update(serial=serial, next_fan=0.0, fans=[], dlp_version="")
+    read_fan = time.time() >= st["next_fan"]
+    read_dlpv = not st["dlp_version"]
+    head = f"READ_FAN={1 if read_fan else 0}\nREAD_DLPV={1 if read_dlpv else 0}\n"
+    raw = adb_shell(serial, head + REMOTE_SCRIPT.split("\n", 1)[1])
     data: dict[str, str] = {}
     extra_zone_lines: list[str] = []
     for line in raw.splitlines():
@@ -646,7 +834,25 @@ def parse_snapshot(serial: str) -> dict:
         elif temp and kind:
             trips[kind] = temp // 1000
 
-    fans = [int(x) for x in re.findall(r"\d+", data.get("fan", ""))]
+    if read_fan:
+        st["next_fan"] = time.time() + FAN_PERIOD + random.uniform(-1.0, 1.0)
+        if "fan" in data:
+            new = [int(x) for x in re.findall(r"\d+", data.get("fan", ""))]
+            # одиночный «0 об/мин» после > 300 — сбой чтения тахометра: оставляем прошлое значение;
+            # 3 нуля подряд (≈ 30 с) — вентилятор правда стоит
+            old, zeros = st["fans"], st.setdefault("zeros", {})
+            for i, v in enumerate(new):
+                prev = old[i] if i < len(old) else None
+                if v == 0 and prev and prev > 300 and zeros.get(i, 0) + 1 < 3:
+                    zeros[i] = zeros.get(i, 0) + 1
+                    new[i] = prev
+                elif v != 0:
+                    zeros[i] = 0
+            st["fans"] = new
+    if read_dlpv and data.get("dlp_version"):
+        st["dlp_version"] = data["dlp_version"]
+    data["dlp_version"] = st["dlp_version"]
+    fans = list(st["fans"])
     temp_raw = integer("temp")
     mem_total = integer("mem_total")
     mem_available = integer("mem_available")
@@ -751,6 +957,7 @@ def enrich(snapshot: dict, limits: dict) -> None:
     """Добавляет в снимок данные hippo (DMD/лазеры), пороги, уровень яркости, максимумы."""
     with THERMAL_LOCK:
         th = dict(THERMAL)
+    saradc = snapshot.pop("saradc", "")
     age = time.time() - th["recv_ts"] if "recv_ts" in th else None
     fresh = age is not None and age < THERMAL_FRESH_S
     mods = limits.get("_laser_modules") or range(4)  # 3-лазерные модели: лишний модуль не показываем
@@ -762,13 +969,15 @@ def enrich(snapshot: dict, limits: dict) -> None:
         "dmd": th.get("dmd") if fresh else None,
         "lasers": lasers if fresh else [],
         "laser_max": max(lasers) if fresh and lasers else None,
-        "lens": lens_temperature(limits, snapshot.pop("saradc", "")),
+        # объектив: у помощника — как в приложении; без него — по сырому АЦП (формула hippo)
+        "lens": th.get("lens") if fresh and th.get("lens") is not None else lens_temperature(limits, saradc),
         "pid_temp": th.get("pid_temp") if fresh else None,
         "fan_duty": th.get("fan_duty") if fresh else None,
         "fan_mode": th.get("fan_mode"),
         "overlap_level": th.get("overlap_level"),
         "fan_status": th.get("fan_status"),
         "hippo_error": th.get("hippo_error"),
+        "source": th.get("source", "logcat" if th else None),  # probe — помощник, logcat — журнал прошивки
     }
     snapshot["thermal"] = thermal
     public_limits = {k: v for k, v in limits.items() if not k.startswith("_")}
@@ -831,18 +1040,7 @@ def enrich(snapshot: dict, limits: dict) -> None:
     snapshot["throttle_since"] = SESSION.get("thr_since")
     snapshot["throttle_first"] = SESSION.get("thr_first")
 
-    # одиночные «0 об/мин» при работающей системе — сбой чтения тахометра, а не остановка:
-    # повторяем прошлое значение (на графике без разрыва); 3 нуля подряд — вентилятор правда стоит
-    for key in ("fan1", "fan2"):
-        val, prev = snapshot.get(key), SESSION.get("last_" + key)
-        zeros = SESSION.get("zero_" + key, 0)
-        if val == 0 and prev and prev > 300 and zeros + 1 < 3:
-            SESSION["zero_" + key] = zeros + 1
-            snapshot[key] = prev
-        elif val is not None:
-            SESSION["last_" + key] = val
-            if val != 0:
-                SESSION["zero_" + key] = 0
+    # сбойные «0 об/мин» отфильтрованы при чтении тахометра (parse_snapshot), здесь значения уже из кэша
 
     # максимумы за сеанс работы дашборда
     if SESSION["serial"] != snapshot["serial"]:
@@ -1097,8 +1295,7 @@ ru:{
   ['w_las','Лазеры','за 1,5 °C до снижения яркости'],
   ['w_dmd','Матрица DMD','за 3 °C до отключения'],
   ['w_cpu','Процессор — перегрев','от 100 °C'],
-  ['w_thr','Процессор — троттлинг','прошивка снизила частоту'],
-  ['w_fan','Вентилятор остановился','0 об/мин под нагрузкой']],
+  ['w_thr','Процессор — троттлинг','прошивка снизила частоту']],
  wnOn:'вкл',wnOff:'выкл',wnPart:'частично',
 nFw:c=>`Пороги — из прошивки этого проектора${c?` (${c})`:''}.`,noLim:'в прошивке нет порога для этого датчика',noDmd:'эта модель не отдает температуру DMD',nDef:'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.',
  nDlp:'DMD меряет датчик в самой матрице (через DLP), поэтому порог выше.',nNtc:'Датчик DMD стоит рядом с матрицей, зеркала горячее.',
@@ -1150,8 +1347,7 @@ en:{
   ['w_las','Lasers','1.5 °C before dimming'],
   ['w_dmd','DMD chip','3 °C before shutdown'],
   ['w_cpu','CPU overheating','from 100 °C'],
-  ['w_thr','CPU throttling','firmware lowered the frequency'],
-  ['w_fan','Fan stopped','0 rpm under load']],
+  ['w_thr','CPU throttling','firmware lowered the frequency']],
  wnOn:'on',wnOff:'off',wnPart:'partly',
 nFw:c=>`Limits are read from this projector's firmware${c?` (${c})`:''}.`,noLim:'the firmware sets no limit for this sensor',noDmd:'this model does not report the DMD temperature',nDef:'⚠ Limits not found in the firmware — N5 Pro values are shown.',
  nDlp:'DMD is measured inside the chip (via DLP), hence the higher limit.',nNtc:'The DMD sensor sits next to the chip; the mirrors run hotter.',
@@ -1179,7 +1375,7 @@ function renderWarn(){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}c
  const tr=(last&&last.latest&&last.latest.trip_passive0)||123;
  $('wnList').innerHTML=T('wnItems').map(([k,t,h])=>[k,t,k==='w_cpu'?h.replace('100',Math.min(100,tr-10)):h]).map(([k,t,h])=>{const st=k==='all'?(WKEYS.every(x=>p[x]!==false)?'wnOn':WKEYS.some(x=>p[x]!==false)?'wnPart':'wnOff'):(p[k]!==false?'wnOn':'wnOff');
    return `<button class="btn wn-row${k==='all'?' all':''}${st==='wnOn'?' on':''}" data-k="${k}" onclick="toggleWarn('${k}')"><b>${T(st)}</b><span>${t}${h?`<small>${h}</small>`:''}</span></button>`}).join('');if(f){const b=$('wnList').querySelector(`[data-k="${f}"]`);b&&b.focus()}}
-const WKEYS=['w_las','w_dmd','w_cpu','w_thr','w_fan'];
+const WKEYS=['w_las','w_dmd','w_cpu','w_thr'];
 // «Все»: если включено все — выключить все, иначе (выкл или частично) — включить все
 function toggleWarn(k){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}Android.setWarn(k,k==='all'?!WKEYS.every(x=>p[x]!==false):p[k]===false);renderWarn()}
 function openWarn(){renderWarn();const r=$('warnBtn').getBoundingClientRect(),b=document.querySelector('.wn-box'),right=Math.max(8,innerWidth-r.right-40);

@@ -189,8 +189,7 @@ ru:{
   ['w_las','Лазеры','за 1,5 °C до снижения яркости'],
   ['w_dmd','Матрица DMD','за 3 °C до отключения'],
   ['w_cpu','Процессор — перегрев','от 100 °C'],
-  ['w_thr','Процессор — троттлинг','прошивка снизила частоту'],
-  ['w_fan','Вентилятор остановился','0 об/мин под нагрузкой']],
+  ['w_thr','Процессор — троттлинг','прошивка снизила частоту']],
  wnOn:'вкл',wnOff:'выкл',wnPart:'частично',
 nFw:c=>`Пороги — из прошивки этого проектора${c?` (${c})`:''}.`,noLim:'в прошивке нет порога для этого датчика',noDmd:'эта модель не отдает температуру DMD',nDef:'⚠ Пороги не нашлись в прошивке — показаны значения N5 Pro.',
  nDlp:'DMD меряет датчик в самой матрице (через DLP), поэтому порог выше.',nNtc:'Датчик DMD стоит рядом с матрицей, зеркала горячее.',
@@ -242,8 +241,7 @@ en:{
   ['w_las','Lasers','1.5 °C before dimming'],
   ['w_dmd','DMD chip','3 °C before shutdown'],
   ['w_cpu','CPU overheating','from 100 °C'],
-  ['w_thr','CPU throttling','firmware lowered the frequency'],
-  ['w_fan','Fan stopped','0 rpm under load']],
+  ['w_thr','CPU throttling','firmware lowered the frequency']],
  wnOn:'on',wnOff:'off',wnPart:'partly',
 nFw:c=>`Limits are read from this projector's firmware${c?` (${c})`:''}.`,noLim:'the firmware sets no limit for this sensor',noDmd:'this model does not report the DMD temperature',nDef:'⚠ Limits not found in the firmware — N5 Pro values are shown.',
  nDlp:'DMD is measured inside the chip (via DLP), hence the higher limit.',nNtc:'The DMD sensor sits next to the chip; the mirrors run hotter.',
@@ -271,7 +269,7 @@ function renderWarn(){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}c
  const tr=(last&&last.latest&&last.latest.trip_passive0)||123;
  $('wnList').innerHTML=T('wnItems').map(([k,t,h])=>[k,t,k==='w_cpu'?h.replace('100',Math.min(100,tr-10)):h]).map(([k,t,h])=>{const st=k==='all'?(WKEYS.every(x=>p[x]!==false)?'wnOn':WKEYS.some(x=>p[x]!==false)?'wnPart':'wnOff'):(p[k]!==false?'wnOn':'wnOff');
    return `<button class="btn wn-row${k==='all'?' all':''}${st==='wnOn'?' on':''}" data-k="${k}" onclick="toggleWarn('${k}')"><b>${T(st)}</b><span>${t}${h?`<small>${h}</small>`:''}</span></button>`}).join('');if(f){const b=$('wnList').querySelector(`[data-k="${f}"]`);b&&b.focus()}}
-const WKEYS=['w_las','w_dmd','w_cpu','w_thr','w_fan'];
+const WKEYS=['w_las','w_dmd','w_cpu','w_thr'];
 // «Все»: если включено все — выключить все, иначе (выкл или частично) — включить все
 function toggleWarn(k){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}Android.setWarn(k,k==='all'?!WKEYS.every(x=>p[x]!==false):p[k]===false);renderWarn()}
 function openWarn(){renderWarn();const r=$('warnBtn').getBoundingClientRect(),b=document.querySelector('.wn-box'),right=Math.max(8,innerWidth-r.right-40);

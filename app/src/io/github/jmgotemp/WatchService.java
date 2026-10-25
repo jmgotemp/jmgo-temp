@@ -36,8 +36,9 @@ public class WatchService extends Service implements Monitor.Listener {
 
     static final int THR = 1, DMD = 2, LASER = 4, FAN = 8, CPU = 16;
     /** ключи настроек (по умолчанию все включено); «watch» — следить в фоне вообще */
-    static final String[] KEYS = {"w_thr", "w_dmd", "w_las", "w_fan", "w_cpu"};
-    static final int[] BITS = {THR, DMD, LASER, FAN, CPU};
+    // «вентилятор стоит» в фоне убрано в 1.4.1 (см. problems), поэтому w_fan здесь больше нет
+    static final String[] KEYS = {"w_thr", "w_dmd", "w_las", "w_cpu"};
+    static final int[] BITS = {THR, DMD, LASER, CPU};
 
     /** Процессор «перегрет» с той же температуры, с какой экран приложения красит его красным, но не ближе 10 °C к троттлингу. */
     static int cpuHot(int trip) { return Math.min(100, trip - 10); }
@@ -95,8 +96,8 @@ public class WatchService extends Service implements Monitor.Listener {
         if (cpu > 0 && cpu >= cpuHot(trip)) m |= CPU;
         if (dmd != null && !Double.isNaN(dmdOff) && dmd >= dmdOff - 3) m |= DMD;
         if (laser != null && !Double.isNaN(laserDim) && laser >= laserDim - 1.5) m |= LASER;
-        // 0 об/мин при поданной мощности > 30 % (одиночные сбойные нули Monitor уже отфильтровал)
-        if (dutyMax > 30 && (fan1 == 0 || fan2 == 0)) m |= FAN;
+        // вентиляторы в фоне не проверяем (с 1.4.1): обороты в фоне не читаются, чтобы не сбивать проверку
+        // вентиляторов прошивки (ошибка 4001); остановку вентилятора прошивка ловит сама
         return m;
     }
 
