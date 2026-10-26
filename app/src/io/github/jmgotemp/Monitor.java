@@ -96,6 +96,7 @@ public final class Monitor {
     private volatile boolean fanBoot, fanLoaded;
     /** Что приложение записало последним (−1 — вернуло авто); null — еще ничего. */
     private Integer fanApplied;
+    private boolean sleeping;
     /** Троттлинг: потолок частоты за сеанс, текущее (сглаженное) состояние и число несовпадающих опросов подряд. */
     private Integer capBase;
     private boolean thrState;
@@ -130,8 +131,30 @@ public final class Monitor {
         if (users == 0 && thread != null) { thread.interrupt(); thread = null; }
     }
 
+    /** Проектор выключен с пульта (сон, STR) или засыпает: hippo ставит sys.jmgo.sleep=1, экран гаснет.
+     *  В это время ничего не опрашиваем и не пишем — переход в сон не должен ждать наших вызовов. */
+    private boolean asleep() {
+        if ("1".equals(prop("sys.jmgo.sleep").trim())) return true;
+        // выключение с пульта на JMGO: Android не засыпает (экран для системы «включен»), hippo ставит
+        // jmgo.system.power.state ≠ 0 (N5 Pro: 3 — «спящий режим») и останавливает вентиляторы
+        String ps = prop("jmgo.system.power.state").trim();
+        if (!ps.isEmpty() && !"0".equals(ps)) return true;
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            return pm != null && !pm.isInteractive();
+        } catch (Throwable e) { return false; }
+    }
+
     private void loop() {
         while (!Thread.currentThread().isInterrupted()) {
+            if (asleep()) {
+                // проснемся — продолжим; выбранную цель Monitor поставит снова, если прошивка ее сбросила
+                if (!sleeping) { sleeping = true; android.util.Log.i("JmgoTemp", "projector asleep (power.state=" + prop("jmgo.system.power.state") + "): polling paused"); }
+                synchronized (this) { fanApplied = null; }
+                try { synchronized (this) { wait(5000); } } catch (InterruptedException e) { return; }
+                continue;
+            }
+            if (sleeping) { sleeping = false; android.util.Log.i("JmgoTemp", "projector awake: polling resumed"); }
             JSONObject snap;
             try { snap = snapshot(); } catch (Throwable t) {
                 dlp = null;
@@ -331,6 +354,14 @@ public final class Monitor {
         }
     }
 
+    /** Значение из старого списка (например, 41 из 1.5), которого нет в текущем, — к ближайшему из списка, при равенстве к холодному. */
+    private Integer nearestOpt(Integer t) {
+        if (t == null || allowed(t)) return t;
+        Integer best = null;
+        for (int v : fanOpts) if (best == null || Math.abs(v - t) < Math.abs(best - t)) best = v;
+        return best;
+    }
+
     private boolean allowed(int t) {
         if (t <= 0) return true;
         for (int v : fanOpts) if (v == t) return true;
@@ -486,15 +517,21 @@ public final class Monitor {
                     for (double[] r : pid) if (r.length > 0) { p.put(r[0]); fx.put(r.length > 2 && r[1] >= r[2]); }
                     l.put("pid_targets", p);
                     l.put("pid_fixed", fx);
-                    // цель вентиляторов: штатная — первая строка PID; по 3 шага по 2 °C вниз и вверх,
-                    // но не ближе 4 °C к снижению яркости (если порога нет — не выше цели ярких режимов)
+                    // цель вентиляторов: штатная — первая строка PID. Список — четные градусы: 4 ниже авто (не ближе 2 °C к авто,
+                    // не ниже 34 °C) и 3 выше, но не ближе 4 °C к снижению яркости (если порога нет — не выше цели ярких режимов).
+                    // Исключение — N5S Ultra Max: 5 ниже и 2 выше
                     double base = -1, bright = -1;
                     for (double[] r : pid) if (r.length > 2 && r[1] < r[2]) { if (base < 0) base = r[0]; bright = Math.max(bright, r[0]); }
                     if (base > 0) {
                         int b = (int) Math.round(base);
-                        int hi = Math.min(b + 6, ld != null ? (int) Math.floor(ld - 4) : (int) Math.floor(bright));
+                        int cap = ld != null ? (int) Math.floor(ld - 4) : (int) Math.floor(bright);
+                        int below = (b - 2) / 2 * 2, above = b / 2 * 2 + 2;   // четное не ближе 2 °C ниже авто; ближайшее четное выше
+                        // N5S Ultra Max (KD11CN, авто 48): по просьбе владельцев 5 значений ниже и 2 выше — 38…46 · 50 52
+                        boolean um = model().toUpperCase(Locale.ROOT).startsWith("KD11CN");
+                        int nBelow = um ? 5 : 4, nAbove = um ? 2 : 3;
                         List<Integer> o = new ArrayList<>();
-                        for (int v = b - 6; v <= hi; v += 2) if (v != b) o.add(v);
+                        for (int v = Math.max(34, below - 2 * (nBelow - 1)); v <= below; v += 2) o.add(v);
+                        for (int v = above; v <= Math.min(above + 2 * (nAbove - 1), cap); v += 2) o.add(v);
                         fanAuto = b;
                         fanOpts = new int[o.size()];
                         for (int i = 0; i < fanOpts.length; i++) fanOpts[i] = o.get(i);
@@ -767,6 +804,11 @@ public final class Monitor {
         if (fc != null) {
             // две цели: для яркости 1–6 и 7–10 (ступень меню; с AL 2.0 меню стоит на 10 — «яркая»)
             loadFanPrefs();
+            Integer lo2 = nearestOpt(fanLo), hi2 = nearestOpt(fanHi);
+            if (!java.util.Objects.equals(lo2, fanLo) || !java.util.Objects.equals(hi2, fanHi)) {
+                fanLo = lo2; fanHi = hi2;
+                prefs().edit().putInt("fan_lo", lo2 == null ? 0 : lo2).putInt("fan_hi", hi2 == null ? 0 : hi2).apply();
+            }
             if (fanLo != null || fanHi != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
             boolean hi = useHi(s);
             Integer want = hi ? fanHi : fanLo;

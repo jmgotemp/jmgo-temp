@@ -70,7 +70,7 @@ def find_adb() -> str:
     return "adb"
 
 
-VERSION = "1.5"  # та же нумерация, что у APK JMGO Temp
+VERSION = "1.5.1"  # та же нумерация, что у APK JMGO Temp
 
 ADB = find_adb()
 TARGET = ""  # IP:порт из командной строки (необязательно)
@@ -127,6 +127,10 @@ DEFAULT_LIMITS = {
 
 REMOTE_SCRIPT = r'''#!/system/bin/sh
 val() { cat "$1" 2>/dev/null || true; }
+# выключен с пульта (спящий режим): hippo ставит jmgo.system.power.state ≠ 0 (N5 Pro: 3) — ничего не читаем
+PS=$(getprop jmgo.system.power.state); SL=$(getprop sys.jmgo.sleep)
+echo "power_state=$PS"
+if [ "$SL" = 1 ] || { [ -n "$PS" ] && [ "$PS" != 0 ]; }; then echo "asleep=1"; exit 0; fi
 echo "model=$(getprop ro.product.model)"
 echo "jmodel=$(getprop ro.boot.jmgo.model)"
 echo "device=$(getprop ro.product.device)"
@@ -818,6 +822,9 @@ def parse_snapshot(serial: str) -> dict:
                 data[key] = value.strip()
     if extra_zone_lines:
         data["zone_extra"] = "\n".join(extra_zone_lines)
+    if data.get("asleep") == "1":
+        # опрос на паузе: poll() остановит помощник и покажет «спящий режим», после включения все продолжится
+        raise DashError("asleep", "Проектор выключен с пульта (спящий режим) — опрос на паузе.")
 
     def integer(key: str, default: int = 0) -> int:
         try:
@@ -1106,6 +1113,8 @@ def poll() -> None:
                         pass
             serial = ""
             WATCHER.stop()
+            if isinstance(exc, DashError) and exc.code == "asleep":
+                time.sleep(3)  # во сне проверяем раз в ~5 с, как приложение
             if isinstance(exc, subprocess.TimeoutExpired):
                 err = {"error": "Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключите и включите "
                                 "беспроводную отладку на проекторе.", "error_code": "timeout"}
@@ -1298,6 +1307,7 @@ ru:{
  e_connecting:'Подключение к проектору…',e_no_adb:'Не найден adb. Положите jmgo_dash.py в папку platform-tools или установите adb.',
  e_connect:t=>`Не удалось подключиться к ${t}. Проверьте IP:порт в настройках беспроводной отладки.`,
  e_not_found:'Проектор не найден. Включите беспроводную отладку ADB на проекторе и подключите компьютер к той же сети (или запустите скрипт с адресом: jmgo_dash.py 192.168.x.x:порт).',
+ e_asleep:'Проектор выключен с пульта (спящий режим). Опрос на паузе — данные появятся после включения.',asleepSt:'спящий режим',
  e_timeout:'Проектор не отвечает по ADB (переподключаюсь…). Если не проходит — выключите и включите беспроводную отладку на проекторе.',e_adb:'Ошибка ADB',
  lasersLim:['лазеры: −ярк. / откл.',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'белый экран',
@@ -1353,6 +1363,7 @@ en:{
  e_connecting:'Connecting to the projector…',e_no_adb:'adb not found. Put jmgo_dash.py into the platform-tools folder or install adb.',
  e_connect:t=>`Could not connect to ${t}. Check IP:port in the wireless debugging settings.`,
  e_not_found:'Projector not found. Enable ADB wireless debugging on the projector and connect the computer to the same network (or start the script with an address: jmgo_dash.py 192.168.x.x:port).',
+ e_asleep:'The projector is off (standby). Polling is paused — data will return once it is turned on.',asleepSt:'standby',
  e_timeout:'The projector does not respond over ADB (reconnecting…). If it persists, turn wireless debugging off and on again on the projector.',e_adb:'ADB error',
  lasersLim:['lasers: dim / off',(d,o)=>`${d}° / ${o}°`],
  bwWhite:'white screen',
@@ -1520,7 +1531,7 @@ function renderProtection(d){
 function errText(d){const c=d.error_code;if(c&&I18N.ru['e_'+c]!=null){const t=T('e_'+c,...(d.error_args||[]));return esc(t)+(c==='adb'||c==='service'?'<br><span class="muted">'+esc(d.error)+'</span>':'')}return esc(d.error)}
 function render(r){
   const d=r.latest||{};
-  if(d.error){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('offline');$('error').innerHTML=`<div class="error">${errText(d)}<br><span class="muted">${T(IS_APP?'errApp':'errDash')}</span></div>`;return}
+  if(d.error){const zz=d.error_code==='asleep';$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T(zz?'asleepSt':'offline');$('error').innerHTML=`<div class="error">${errText(d)}${zz?'':'<br><span class="muted">'+T(IS_APP?'errApp':'errDash')+'</span>'}</div>`;return}
   $('status').className='status';$('status').innerHTML='<i class="dot"></i>'+T('connected');$('error').innerHTML='';
   $('name').textContent=d.name||'JMGO';
   $('device').textContent=`${T('updated')} ${new Date(d.ts*1000).toLocaleTimeString(LANG==='ru'?'ru':'en-GB')}${d.uptime?' · '+T('uptime',Math.floor(d.uptime/3600),Math.floor(d.uptime%3600/60)):''}`;
