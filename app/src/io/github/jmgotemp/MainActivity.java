@@ -30,7 +30,8 @@ public class MainActivity extends Activity {
         web.loadUrl("file:///android_asset/dashboard.html");
         web.requestFocus();
         // фоновые предупреждения о перегреве: работают, пока приложение в памяти после выхода с экрана
-        if (prefs().getBoolean("watch", true)) startForegroundService(new Intent(this, WatchService.class));
+        // своя цель вентиляторов тоже держит службу (ставит цель по яркости и после белого экрана)
+        if (prefs().getBoolean("watch", true) || monitor.hasFanTarget()) startForegroundService(new Intent(this, WatchService.class));
         handleIntent(getIntent());
     }
 
@@ -44,7 +45,8 @@ public class MainActivity extends Activity {
         if (i != null && i.hasExtra("watch")) {
             String w = i.getStringExtra("watch");
             Intent s = new Intent(this, WatchService.class);
-            if ("off".equals(w)) { prefs().edit().putBoolean("watch", false).apply(); stopService(s); }
+            // служба нужна и без предупреждений, если выбрана своя температура вентиляторов
+            if ("off".equals(w)) { prefs().edit().putBoolean("watch", false).apply(); if (!monitor.hasFanTarget()) stopService(s); }
             else { prefs().edit().putBoolean("watch", true).apply(); startForegroundService("test".equals(w) ? s.setAction("test") : s); }
             if (i.getBooleanExtra("finish", false)) finish();
             return;
@@ -116,8 +118,21 @@ public class MainActivity extends Activity {
             for (String k : WatchService.KEYS) any |= prefs().getBoolean(k, true);
             prefs().edit().putBoolean("watch", any).apply();
             Intent s = new Intent(MainActivity.this, WatchService.class);
-            if (any) startForegroundService(s); else stopService(s);
+            // своя цель вентиляторов тоже держит службу: она ставит цель снова после белого экрана
+            if (any || monitor.hasFanTarget()) startForegroundService(s); else stopService(s);
         }
+
+        /** Цели температуры для вентиляторов: lo — яркость 1–6, hi — 7–10; t > 0 — своя, 0 — как в прошивке. */
+        @JavascriptInterface public String setFanTargets(int lo, int hi) {
+            String r = monitor.setFanTargets(lo, hi);
+            Intent s = new Intent(MainActivity.this, WatchService.class);
+            if (monitor.hasFanTarget()) startForegroundService(s);
+            else if (!prefs().getBoolean("watch", true)) stopService(s);
+            return r;
+        }
+
+        /** «Применять после включения проектора»: после загрузки приложение само запускается в фоне и ставит выбранные цели. */
+        @JavascriptInterface public void setFanBoot(boolean on) { monitor.setFanBoot(on); }
 
         @JavascriptInterface public void testWarn() {
             startForegroundService(new Intent(MainActivity.this, WatchService.class).setAction("test"));

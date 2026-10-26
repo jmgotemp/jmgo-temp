@@ -68,12 +68,12 @@ html.narrow .brand b{display:none}
 .app-only{display:none}.is-app .app-only{display:inline-block}
 .btn.don{color:var(--orange);border-color:#6b4a26}.btn.don:focus{color:var(--orange);border-color:var(--blue)}
 .btn .hrt{color:#ff4d5a}
-#donate{position:fixed;inset:0;background:#000000eb;display:none;align-items:center;justify-content:center;z-index:20}#donate.open{display:flex}
+#donate{position:fixed;top:0;right:0;bottom:0;left:0;background:#000000eb;display:none;align-items:center;justify-content:center;z-index:20}#donate.open{display:flex}
 .dn-box{background:var(--panel);border:1px solid var(--line);border-radius:2vh;padding:4vh 3vw;display:flex;gap:3vw;align-items:center;max-width:86vw}
-#warn{position:fixed;inset:0;z-index:20;visibility:hidden;background:transparent;transition:background .18s,visibility 0s .18s}#warn.open{visibility:visible;background:#0000005c;transition:background .18s}
+#warn,#tgt{position:fixed;top:0;right:0;bottom:0;left:0;z-index:20;visibility:hidden;background:transparent;transition:background .18s,visibility 0s .18s}#warn.open,#tgt.open{visibility:visible;background:#0000005c;transition:background .18s}
 .wn-box{position:absolute;top:8vh;right:2vw;background:var(--panel);border:1px solid var(--line);border-radius:1.2vh;padding:1.3vh .9vw 1.2vh;width:max-content;box-shadow:0 1.6vh 5vh #000c;
  transform-origin:var(--ox,90%) 0;opacity:0;transform:translateY(-1vh) scale(.94,.6);transition:opacity .18s,transform .18s cubic-bezier(.2,.8,.3,1)}
-#warn.open .wn-box{opacity:1;transform:none}
+#warn.open .wn-box,#tgt.open .wn-box{opacity:1;transform:none}
 .wn-box::before{content:'';position:absolute;top:-9px;right:var(--cx,60px);width:16px;height:16px;background:var(--panel);border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
 .wn-box p{margin:0 0 1vh;color:var(--muted);font-size:1.45vh;line-height:1.35;width:0;min-width:100%}
 .wn-row{display:flex;justify-content:flex-start;align-items:center;gap:.8vw;width:100%;text-align:left;margin:0 0 .5vh;padding:.55vh .7vw;font-size:1.65vh}
@@ -81,6 +81,13 @@ html.narrow .brand b{display:none}
 .wn-row.on{border-color:var(--line)}.wn-row:focus{border-color:var(--blue)}
 .wn-row b{flex:none;min-width:3.6vw;text-align:center;border-radius:7px;padding:.2vh .5vw;font-size:1.55vh;background:#2b3038;color:var(--muted)}.wn-row.on b{background:#1f3a29;color:var(--green)}
 .wi{color:var(--yellow)}
+.lhead{display:flex;justify-content:space-between;align-items:center;gap:.5vw}.lhead .label{margin-bottom:0}
+.btn.tgt{font-size:1.35vh;padding:.1vh .6vw;border-width:1px;border-radius:7px;color:var(--muted);margin:-.4vh 0 .4vh;white-space:nowrap}.btn.tgt.on{color:var(--orange);border-color:#6b4a26}.btn.tgt:focus{color:var(--text);border-color:var(--blue)}
+#tgt .tgt-reset{color:var(--orange);font-weight:600;font-size:1.45vh}
+#tgtList{display:flex;flex-direction:column;gap:.7vh}.tgt-row{display:flex;align-items:center;gap:.45vw}
+.tgt-lbl{min-width:6.6vw;color:var(--text);font-size:1.5vh;white-space:nowrap}
+#tgtList .wn-row{margin:.3vh 0 0;width:auto}.tgt-chip{font-size:1.65vh;padding:.5vh .7vw;white-space:nowrap;font-variant-numeric:tabular-nums}.tgt-chip small{color:var(--muted);font-size:1.3vh;margin-left:.35vw}
+.tgt-chip.on{color:var(--green)}.tgt-chip:focus{border-color:var(--blue)}.tgt-err{color:var(--red)!important;margin:.6vh 0 0!important}.tgt-err:empty{display:none}
 .wn-btns{display:flex;align-items:center;justify-content:space-between;gap:1.2vw;margin-top:.9vh}.wn-hint{color:var(--muted);font-size:1.35vh}
 .dn-qr{width:36vh;height:36vh;flex:none;background:#fff;border-radius:1vh}.dn-qr svg{width:100%;height:100%;display:block;shape-rendering:crispEdges}
 .dn-txt h2{margin:0 0 1.4vh;font-size:3.2vh}.dn-txt p{margin:0 0 1.6vh;color:var(--muted);font-size:2vh;line-height:1.4;max-width:44vw}
@@ -116,11 +123,11 @@ html.narrow .chart canvas{flex:none;height:260px}
 <button id="warnBtn" class="btn app-only" onclick="openWarn()"><span class="wi">&#9888;&#65038;</span> <span data-i="warnBtn"></span></button>
 <button id="donBtn" class="btn don" onclick="openDonate()"><span class="hrt">&#9829;&#65038;</span> <span data-i="donBtn"></span></button>
 <div class="status" id="status"></div></div></div>
-<div id="error"></div><div id="ovWarn"></div><div id="alert"></div>
+<div id="error"></div><div id="ovWarn"></div><div id="alert"></div><div id="popDiag"></div>
 <section class="kpis">
   <div class="metric xl"><div class="label" data-i="cpuT"></div><div class="cpu-pair"><div class="big" id="temp">—</div><span class="sep" id="loadSep">|</span><div class="big" id="load">—</div></div><div class="metric-sub" id="cpuSub">—</div></div>
   <div class="metric xl"><div class="dmd-grid"><div class="label" data-i="dmdT"></div><div class="label lens-x" data-i="lensT"></div><div class="big" id="dmd">—</div><div class="big lens-x" id="lensVal">—</div></div><div class="metric-sub" id="dmdSub">—</div></div>
-  <div class="metric"><div class="label" data-i="laserT"></div><div class="big" id="laserMax">—</div><div class="laser-row" id="laserRow"></div><div class="metric-sub" id="laserSub">—</div></div>
+  <div class="metric"><div class="lhead"><div class="label" data-i="laserT"></div><button id="tgtBtn" class="btn tgt" style="display:none" onclick="openTgt()"></button></div><div class="big" id="laserMax">—</div><div class="laser-row" id="laserRow"></div><div class="metric-sub" id="laserSub">—</div></div>
   <div class="metric"><div class="label" data-i="fanT"></div><div class="fan-pair"><div class="fan-item"><div class="fan-value" id="fan1">—</div><div class="fan-name" id="fan1n"></div></div><div class="fan-item"><div class="fan-value" id="fan2">—</div><div class="fan-name" id="fan2n"></div></div></div><div class="metric-sub" id="fanSub">—</div></div>
   <div class="metric"><div class="label" data-i="brT"></div><div class="big" id="brightness">—</div><div class="metric-sub" id="brSub">—</div></div>
 </section>
@@ -141,6 +148,8 @@ html.narrow .chart canvas{flex:none;height:260px}
 </main>
 <div id="warn" onclick="if(event.target===this)closeWarn()"><div class="wn-box"><p data-i="wnText"></p><div id="wnList"></div>
 <div class="wn-btns"><button class="btn" id="wnTest" onclick="Android.testWarn()" data-i="wnTest"></button><span class="wn-hint" data-i="wnBack"></span></div></div></div>
+<div id="tgt" onclick="if(event.target===this)closeTgt()"><div class="wn-box"><p><span data-i="tgtText"></span><br><span data-i="tgtText2"></span></p><div id="tgtList"></div><p class="tgt-err" id="tgtErr"></p>
+<div class="wn-btns"><span class="tgt-reset" id="tgtReset"></span><span class="wn-hint" data-i="wnBack"></span></div></div></div>
 <div id="donate" onclick="if(event.target===this)closeDonate()"><div class="dn-box"><div class="dn-qr"><svg viewBox="0 0 37 37"><path fill="#fff" d="M0 0h37v37h-37z"/><path stroke="#000" d="M4 4.5h7m2 0h1m1 0h1m1 0h1m2 0h1m2 0h1m2 0h7m-29 1h1m5 0h1m3 0h2m1 0h3m1 0h2m1 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m2 0h2m2 0h5m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m1 0h1m1 0h3m2 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h1m2 0h2m1 0h1m1 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h3m1 0h3m3 0h2m2 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-18 1h2m1 0h1m2 0h4m-21 1h1m2 0h1m1 0h2m1 0h1m2 0h2m2 0h2m4 0h1m1 0h1m-23 1h2m4 0h2m1 0h1m1 0h1m1 0h2m4 0h1m1 0h1m2 0h1m2 0h1m-29 1h1m3 0h1m1 0h1m1 0h5m6 0h1m1 0h1m1 0h1m1 0h3m-26 1h2m1 0h1m3 0h1m4 0h2m2 0h2m1 0h1m4 0h2m-28 1h2m3 0h2m3 0h3m3 0h2m1 0h5m1 0h1m1 0h2m-28 1h1m1 0h1m3 0h1m3 0h1m3 0h6m-20 1h1m2 0h1m1 0h1m2 0h2m6 0h2m6 0h4m-29 1h2m2 0h2m3 0h1m1 0h7m6 0h2m1 0h1m-28 1h3m3 0h1m2 0h2m2 0h2m2 0h2m1 0h1m6 0h1m-26 1h2m1 0h1m2 0h1m1 0h2m4 0h2m3 0h3m1 0h1m2 0h1m-29 1h1m1 0h2m2 0h1m1 0h2m1 0h3m2 0h2m3 0h1m1 0h1m3 0h2m-27 1h2m1 0h1m3 0h1m2 0h2m1 0h1m1 0h5m2 0h1m2 0h2m-29 1h1m5 0h3m1 0h1m3 0h1m4 0h6m1 0h1m-19 1h3m2 0h1m2 0h2m1 0h2m3 0h1m1 0h3m-29 1h7m5 0h3m1 0h1m3 0h1m1 0h1m1 0h1m2 0h1m-28 1h1m5 0h1m1 0h1m4 0h1m1 0h1m3 0h2m3 0h3m-27 1h1m1 0h3m1 0h1m3 0h2m2 0h1m1 0h2m2 0h5m3 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h4m4 0h2m1 0h6m-28 1h1m1 0h3m1 0h1m2 0h1m1 0h3m2 0h1m2 0h3m2 0h3m1 0h1m-29 1h1m5 0h1m3 0h1m2 0h1m2 0h5m2 0h2m2 0h1m-28 1h7m1 0h1m1 0h4m1 0h1m1 0h1m2 0h1m3 0h2m1 0h1"/></svg></div><div class="dn-txt"><h2 data-i="dnTitle"></h2><p data-i="dnText"></p><div class="dn-url" id="dnUrl">boosty.to/jmgotemp</div><button class="btn" id="dnClose" onclick="closeDonate()" data-i="dnClose"></button></div></div></div>
 <script>
 const IS_APP=typeof Android!=='undefined';
@@ -185,6 +194,9 @@ ru:{
  warnBtn:'Предупреждения',wnTitle:'Предупреждения поверх фильма',
  wnText:'После выхода из приложения оно раз в 5 с проверяет температуры и при перегреве на 20 с показывает сообщение слева вверху. Если выключить все — после выхода ничего не делает.',
  wnTest:'Пример предупреждения',wnBack:'«Назад» на пульте — закрыть',
+ tgtBtn:t=>t?`Изменено: ${t} ▾`:'Изменить °C ▾',tgtText:'Температура лазеров, которую держат вентиляторы.',tgtAutoTxt:'Авто — как в прошивке.',tgtText2:'Ниже — холоднее и громче, выше — тише и горячее.',tgtReset:'↻ Сбросится после перезагрузки проектора.',tgtKeep:'↻ Сохранится после перезагрузки проектора.',
+ tgtLo:'Яркость 1–6',tgtHi:'Яркость 7–10',tgtBoot:'Сохранять после перезагрузки',
+ tgtAuto:'авто',popDiag:'⚠ Окно не показалось. Пришлите, пожалуйста, фото этой строки:',tgtFail:'Не удалось:',
  wnItems:[['all','Все предупреждения',''],
   ['w_las','Лазеры','за 1,5 °C до снижения яркости'],
   ['w_dmd','Матрица DMD','за 3 °C до отключения'],
@@ -237,6 +249,9 @@ en:{
  warnBtn:'Warnings',wnTitle:'Warnings over the movie',
  wnText:'After you leave the app it checks temperatures every 5 s and, if something overheats, shows a message at the top left for 20 s. With everything off, it does nothing after you leave.',
  wnTest:'Example warning',wnBack:'Back on the remote — close',
+ tgtBtn:t=>t?`Changed: ${t} ▾`:'Change °C ▾',tgtText:'Laser temperature the fans hold.',tgtAutoTxt:'Auto is the firmware default.',tgtText2:'Lower is cooler and louder, higher is quieter and hotter.',tgtReset:'↻ Resets after the projector reboots.',tgtKeep:'↻ Kept after the projector reboots.',
+ tgtLo:'Brightness 1–6',tgtHi:'Brightness 7–10',tgtBoot:'Keep after reboot',
+ tgtAuto:'auto',popDiag:'⚠ The window did not appear. Please send a photo of this line:',tgtFail:'Failed:',
  wnItems:[['all','All warnings',''],
   ['w_las','Lasers','1.5 °C before dimming'],
   ['w_dmd','DMD chip','3 °C before shutdown'],
@@ -263,7 +278,7 @@ function applyStatic(){document.documentElement.lang=LANG;document.querySelector
 function toggleLang(){LANG=LANG==='ru'?'en':'ru';try{IS_APP?Android.setLang(LANG):localStorage.setItem('jmgo_lang',LANG)}catch(e){}applyStatic();if(last)render(last);updOverlayBtn()}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function set(id,v){$(id).innerHTML=v}
-function openDonate(){$('donate').classList.add('open');$('dnClose').focus()}
+function openDonate(){popOpened();$('donate').classList.add('open');popFocus(()=>$('dnClose'))}
 function closeDonate(){$('donate').classList.remove('open');$('donBtn').focus()}
 function renderWarn(){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}const f=document.activeElement&&document.activeElement.dataset.k;
  const tr=(last&&last.latest&&last.latest.trip_passive0)||123;
@@ -274,9 +289,45 @@ const WKEYS=['w_las','w_dmd','w_cpu','w_thr'];
 function toggleWarn(k){let p={};try{p=JSON.parse(Android.warnPrefs())}catch(e){}Android.setWarn(k,k==='all'?!WKEYS.every(x=>p[x]!==false):p[k]===false);renderWarn()}
 function openWarn(){renderWarn();const r=$('warnBtn').getBoundingClientRect(),b=document.querySelector('.wn-box'),right=Math.max(8,innerWidth-r.right-40);
  b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`);
- $('warnBtn').classList.add('on');$('warn').classList.add('open');$('wnList').querySelector('.btn').focus()}
+ popOpened();$('warnBtn').classList.add('on');$('warn').classList.add('open');popFocus(()=>$('wnList').querySelector('.btn'))}
 function closeWarn(){$('warn').classList.remove('open');$('warnBtn').classList.remove('on');$('warnBtn').focus()}
-function onBack(){if($('donate').classList.contains('open')){closeDonate();return true}if($('warn').classList.contains('open')){closeWarn();return true}return false}
+function onBack(){if($('donate').classList.contains('open')){closeDonate();return true}if($('warn').classList.contains('open')){closeWarn();return true}if($('tgt').classList.contains('open')){closeTgt();return true}return false}
+// Цель температуры лазеров для вентиляторов (только приложение, N5/N5S/IRIS): список значений и штатная цель — из прошивки модели
+function tgtCtl(){return last&&last.latest&&last.latest.fan_ctl}
+function renderTgt(){const fc=tgtCtl();if(!fc)return;const a=document.activeElement,fr=a&&a.dataset.r,ft=a&&a.dataset.t;
+ const vals=[...fc.opts,0].sort((x,y)=>(x||fc.auto)-(y||fc.auto));
+ const row=r=>{const cur=fc[r]||0;return `<div class="tgt-row"><span class="tgt-lbl">${T(r==='lo'?'tgtLo':'tgtHi')}</span>`+
+  vals.map(v=>`<button class="btn tgt-chip${v===cur?' on':''}" data-r="${r}" data-t="${v}" onclick="pickTgt('${r}',${v})">${v||fc.auto}${v===0?`<small>${T('tgtAuto')}</small>`:''}</button>`).join('')+'</div>'};
+ $('tgtList').innerHTML=row('lo')+row('hi')+`<div class="tgt-row"><button class="btn wn-row${fc.boot?' on':''}" data-r="boot" data-t="0" onclick="pickBoot()"><b>${T(fc.boot?'wnOn':'wnOff')}</b><span>${T('tgtBoot')}</span></button></div>`;
+ $('tgtReset').textContent=T(fc.boot?'tgtKeep':'tgtReset');
+ if(fr!=null){const b=$('tgtList').querySelector(`[data-r="${fr}"][data-t="${ft}"]`)||$('tgtList').querySelector(`[data-r="${fr}"]`);b&&b.focus()}}
+// список раскрывается от кнопки, стрелка указывает на нее (как «Предупреждения»)
+function openTgt(){if(!tgtCtl())return;$('tgtErr').textContent='';renderTgt();const r=$('tgtBtn').getBoundingClientRect(),b=document.querySelector('#tgt .wn-box'),right=Math.max(8,innerWidth-r.right-12);
+ b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`);
+ popOpened();$('tgt').classList.add('open');const fc=tgtCtl();popFocus(()=>$('tgtList').querySelector(`[data-r="${fc.use}"].on`)||$('tgtList').querySelector('.btn'))}
+function closeTgt(){$('tgt').classList.remove('open');$('tgtBtn').focus()}
+function pickTgt(r,v){const fc=tgtCtl();if(!fc)return;const lo=r==='lo'?v:(fc.lo||0),hi=r==='hi'?v:(fc.hi||0);let res='';
+ try{res=Android.setFanTargets(lo,hi)}catch(e){res=String(e)}
+ if(res!=='ok'){$('tgtErr').textContent=T('tgtFail')+' '+res;return}$('tgtErr').textContent='';
+ fc.lo=lo;fc.hi=hi;const w=fc[fc.use];if(w>0)fc.custom=w;else delete fc.custom;updTgtBtn(fc);renderTgt()}
+function pickBoot(){const fc=tgtCtl();if(!fc)return;fc.boot=!fc.boot;try{Android.setFanBoot(fc.boot)}catch(e){}renderTgt()}
+function updTgtBtn(fc){const b=$('tgtBtn');if(!IS_APP||!fc){b.style.display='none';return}b.style.display='';
+ const lo=fc.lo||0,hi=fc.hi||0,u=v=>v?`${v}&nbsp;°C`:T('tgtAuto');
+ b.innerHTML=T('tgtBtn',!lo&&!hi?'':lo===hi?u(lo):lo&&hi?`${lo} / ${hi}&nbsp;°C`:`${u(lo)} / ${u(hi)}`);b.classList.toggle('on',!!(lo||hi));
+ if($('tgt').classList.contains('open'))renderTgt()}
+// Окно открыли кнопкой OK — то же нажатие (на новых WebView клик приходит при отпускании) не должно
+// сработать на кнопке внутри окна: 0,5 с после открытия клики внутри окон игнорируем
+let popUntil=0;function popOpened(){popUntil=Date.now()+500;popCheck()}
+// Самопроверка: окно открыли, но его не видно (за краем экрана или нулевого размера) — показываем строку
+// с версией WebView, чтобы владелец мог прислать фото (на N3 нет adb). Если все в порядке, ничего не выводится.
+function popCheck(){setTimeout(()=>{const o=['warn','tgt','donate'].map($).find(x=>x.classList.contains('open'));if(!o)return;
+ const b=o.querySelector('.wn-box,.dn-box').getBoundingClientRect(),c=o.getBoundingClientRect();
+ if(b.width>0&&b.height>0&&b.right>0&&b.bottom>0&&b.left<innerWidth&&b.top<innerHeight){$('popDiag').innerHTML='';return}
+ const v=(navigator.userAgent.match(/Chrome\/([\d.]+)/)||[])[1]||'?',sup=window.CSS&&CSS.supports?CSS.supports('inset','0'):'?',r=x=>`${x.left|0},${x.top|0} ${x.width|0}×${x.height|0}`;
+ $('popDiag').innerHTML=`<div class="alert">${T('popDiag')} WebView ${esc(v)} · inset ${sup} · ${esc(o.id)} ${r(b)} / ${r(c)} · ${innerWidth}×${innerHeight}</div>`},400)}
+document.addEventListener('click',e=>{if(Date.now()<popUntil&&e.target.closest&&e.target.closest('#warn .wn-box,#tgt .wn-box,#donate .dn-box')){e.preventDefault();e.stopPropagation()}},true);
+// фокус в только что открытое окно; если WebView еще не успел показать его — повторяем в следующем кадре
+function popFocus(f){const b=f();b&&b.focus();if(!b||document.activeElement!==b)requestAnimationFrame(()=>{const c=f();c&&c.focus()})}
 if(!IS_APP)$('dnUrl').innerHTML='<a href="https://boosty.to/jmgotemp/donate" target="_blank" rel="noopener">boosty.to/jmgotemp</a>';
 const fmt=v=>v==null?'—':(Math.round(v*10)/10).toFixed(1);
 const unit=(v,u)=>v==null||v===''?'—':`${esc(v)}<span class="unit"> ${u}</span>`;
@@ -365,7 +416,8 @@ function render(r){
   set('laserRow',(th.lasers||[]).map((v,i)=>`<div class="laser-chip" style="border-bottom:2px solid ${LCOL[i]}"><small>${T('module')} ${i+1}</small>${fmt(v)}</div>`).join(''));
   set('laserSub',lm==null?'—':lim.laser_derate?T('toDim',fmt(lM),lim.laser_derate):T('noLim'));
   set('fan1',d.fan1??'—');set('fan2',d.fan2??'—');
-  const duty=th.fan_duty,tg=pidTargets(lim);const tgt=th.fan_mode==='PID'&&tg.length?tg[Math.min(th.overlap_level||0,tg.length-1)]:null;
+  const duty=th.fan_duty,tg=pidTargets(lim),fc=d.fan_ctl;const tgt=th.fan_mode!=='PID'?null:fc&&fc.now>0?fc.now:tg.length?tg[Math.min(th.overlap_level||0,tg.length-1)]:null;
+  updTgtBtn(fc);
   set('fanSub',duty&&duty.length?T('fanSub',Math.max(...duty),tgt):T('fanNo'));
   const mode=d.brightness_mode,fixed=FIXED_MODES.includes(mode);
   let big='—';
@@ -415,11 +467,19 @@ function updOverlayBtn(){if(!IS_APP)return;try{const on=Android.overlayOn(),can=
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&onBack()){e.preventDefault();return}
   if($('donate').classList.contains('open')&&e.key.startsWith('Arrow')){$('dnClose').focus();e.preventDefault();return}
-  if($('warn').classList.contains('open')&&e.key.startsWith('Arrow')){const bs=[...$('warn').querySelectorAll('.btn')];let i=bs.indexOf(document.activeElement);const n=bs.length;
+  if($('tgt').classList.contains('open')&&e.key.startsWith('Arrow')){const rows=[...$('tgtList').querySelectorAll('.tgt-row')].map(r=>[...r.querySelectorAll('.btn')]);
+    let ri=rows.findIndex(r=>r.includes(document.activeElement)),ci=ri<0?0:rows[ri].indexOf(document.activeElement);if(ri<0)ri=0;
+    const r0=ri;if(e.key==='ArrowDown')ri=Math.min(rows.length-1,ri+1);else if(e.key==='ArrowUp')ri=Math.max(0,ri-1);
+    else ci=e.key==='ArrowRight'?ci+1:ci-1;const r=rows[ri];if(ri!==r0&&rows[r0].length!==r.length)ci=Math.max(0,r.findIndex(b=>b.classList.contains('on')));const b=r[Math.max(0,Math.min(r.length-1,ci))];b&&b.focus();e.preventDefault();return}
+  const dd=['warn','tgt'].map($).find(x=>x.classList.contains('open'));
+  if(dd&&e.key.startsWith('Arrow')){const bs=[...dd.querySelectorAll('.btn')];let i=bs.indexOf(document.activeElement);const n=bs.length;
     i=i<0?0:e.key==='ArrowDown'?Math.min(n-1,i+1):e.key==='ArrowUp'?Math.max(0,i-1):e.key==='ArrowRight'?Math.min(n-1,i+1):Math.max(0,i-1);bs[i].focus();bs[i].scrollIntoView({block:'nearest'});e.preventDefault();return}
+  const tb=$('tgtBtn'),inHead=document.activeElement&&document.activeElement.closest('.hdr-right');
+  if(e.key==='ArrowDown'&&inHead&&tb.offsetParent){tb.focus();e.preventDefault();return}
+  if(e.key==='ArrowUp'&&document.activeElement===tb){(IS_APP?$('ovBtn'):$('langBtn')).focus();e.preventDefault();return}
   if(e.key==='ArrowDown'){window.scrollBy({top:260,behavior:'smooth'});e.preventDefault()}
   else if(e.key==='ArrowUp'){window.scrollBy({top:-260,behavior:'smooth'});e.preventDefault()}
-  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent&&!b.closest('#warn'));let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
+  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent&&!b.closest('#warn,#tgt'));let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
 });
 async function tick(){
   try{

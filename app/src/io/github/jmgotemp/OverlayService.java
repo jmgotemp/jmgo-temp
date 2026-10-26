@@ -89,7 +89,10 @@ public class OverlayService extends Service implements Monitor.Listener {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "reposition".equals(intent.getAction()) && view != null) wm.updateViewLayout(view, params());
+        if (intent != null && "reposition".equals(intent.getAction()) && view != null) {
+            minW = minH = 0; view.setMinWidth(0); view.setMinHeight(0);
+            wm.updateViewLayout(view, params());
+        }
         return START_STICKY;
     }
 
@@ -101,6 +104,8 @@ public class OverlayService extends Service implements Monitor.Listener {
         if (view != null) { try { wm.removeView(view); } catch (Exception ignored) {} }
         super.onDestroy();
     }
+
+    private int minW, minH;
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
@@ -133,7 +138,14 @@ public class OverlayService extends Service implements Monitor.Listener {
     @Override
     public void onUpdate(JSONObject d) {
         final CharSequence text = format(d);
-        ui.post(() -> { if (view != null) view.setText(text); });
+        ui.post(() -> {
+            if (view == null) return;
+            view.setText(text);
+            // окно только растет: если строка стала короче (пропала пометка, другое число), размер не меняется
+            view.measure(android.view.View.MeasureSpec.UNSPECIFIED, android.view.View.MeasureSpec.UNSPECIFIED);
+            if (view.getMeasuredWidth() > minW) { minW = view.getMeasuredWidth(); view.setMinWidth(minW); }
+            if (view.getMeasuredHeight() > minH) { minH = view.getMeasuredHeight(); view.setMinHeight(minH); }
+        });
     }
 
     private boolean ru() {

@@ -28,6 +28,9 @@ import java.util.Locale;
  * Фоновое наблюдение: после выхода из приложения (оно остается в памяти) раз в 5 с читает те же данные
  * и при троттлинге, перегреве или остановке вентилятора на 20 с показывает предупреждение поверх фильма.
  * Пока открыт экран приложения или включен компактный режим, предупреждение не нужно — там все видно.
+ * Служба работает и при выключенных предупреждениях, если выбрана своя цель вентиляторов:
+ * Monitor переключает цель по яркости (1–6 / 7–10) и ставит ее снова, когда прошивка сбросит цель после белого экрана.
+ * С «Применять после включения проектора» ее запускает BootReceiver после загрузки.
  */
 public class WatchService extends Service implements Monitor.Listener {
     static volatile boolean running;
@@ -117,6 +120,8 @@ public class WatchService extends Service implements Monitor.Listener {
         // что пользователь выключил в «Предупреждениях», не показываем
         android.content.SharedPreferences p = getSharedPreferences("overlay", MODE_PRIVATE);
         for (int i = 0; i < KEYS.length; i++) if (!p.getBoolean(KEYS[i], true)) m &= ~BITS[i];
+        // предупреждения выключены совсем (служба работает только ради цели вентиляторов)
+        if (!p.getBoolean("watch", true)) m = 0;
         // проблема должна держаться 2 опроса подряд (~10 с), чтобы не реагировать на одиночный всплеск
         pendingCount = m != 0 && m == pending ? pendingCount + 1 : (m != 0 ? 1 : 0);
         pending = m;

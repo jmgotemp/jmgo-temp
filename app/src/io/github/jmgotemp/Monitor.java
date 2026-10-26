@@ -33,17 +33,29 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Только чтение. Данные берутся у системного сервиса JMGO (jmgomiddle-01 -> DLP manager),
+ * Данные берутся у системного сервиса JMGO (jmgomiddle-01 -> DLP manager),
  * того же, к которому обращаются штатные настройки и «Клон настроек».
+ * Все только читается, кроме одного: по выбору пользователя (N5/N5S/IRIS) — цель температуры,
+ * которую держат вентиляторы (set 0x11a). Прошивка не хранит ее после перезагрузки.
  */
 public final class Monitor {
     private static final String SYS = "com.jmgo.middleware.service.IJmGOSystemService";
     private static final String DLP = "com.jmgo.middleware.dlp.IJmGODlpManagerService";
-    private static final int T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
+    private static final int T_SET = 1, T_GET = 2, T_GET_STRING = 4, T_GET_ARRAY = 6;
     private static final int IDX_TEMPS = 0x105, IDX_FAN_DUTY = 0xa7, IDX_FAN_STATUS = 0x76,
             IDX_FAN_MODE = 0x70, IDX_BRIGHTNESS = 0x200, IDX_OVERLAP_LEVEL = 0x334,
             IDX_BRIGHTNESS_MODE = 0x64, IDX_LENS = 0x138, // температура объектива (getString), −999 — нет датчика
-            IDX_APERTURE = 0x213; // диафрагма: F × 100 (как в «Клоне настроек»); ≤ 0 — нет диафрагмы (N5 Pro)
+            IDX_APERTURE = 0x213, // диафрагма: F × 100 (как в «Клоне настроек»); ≤ 0 — нет диафрагмы (N5 Pro)
+            // цель PID вентиляторов поверх конфига (hippo setFactoryPIDTemperature); −1 — как в прошивке.
+            // Прошивка сама ставит ее на белом экране (режим 22) и сбрасывает в −1 после него.
+            IDX_FAN_TARGET = 0x11a;
+    /** Модели, где цель проверена по прошивке: N5 Pro / N5 (K981, K983), N5S Ultra Max / IRIS Ultra Max (KD11), N5S Ultra / IRIS Ultra (KD21),
+     *  серия N3 (K930, K931, K940, K941: CN-коды из одного пакета обновления K931CN/K941CN, глобальная N3 Ultimate K931AO).
+     *  На китайской N3 Ultra запись проверена владельцем. */
+    private static final String[] FAN_CTL_MODELS = {"K981", "K983", "KD11", "KD21", "K930", "K931", "K940", "K941"};
+    /** С какой ступени меню яркости действует вторая цель («яркая»): 1–6 — первая, 7–10 и фиксированные яркие режимы — вторая. */
+    static final int FAN_HI_LEVEL = 7;
+    static final int MODE_WHITE = 22;
 
     private static Monitor instance;
 
@@ -77,6 +89,21 @@ public final class Monitor {
     private long nextTachAt;
     private final Random rnd = new Random();
     private String dlpVersion;
+    /** Цели, выбранные в приложении: для яркости 1–6 и 7–10; null — как в прошивке.
+     *  Хранятся в настройках вместе с номером загрузки: после перезагрузки сбрасываются,
+     *  если не включено «Применять после включения проектора» (fanBoot). */
+    private volatile Integer fanLo, fanHi;
+    private volatile boolean fanBoot, fanLoaded;
+    /** Что приложение записало последним (−1 — вернуло авто); null — еще ничего. */
+    private Integer fanApplied;
+    /** Троттлинг: потолок частоты за сеанс, текущее (сглаженное) состояние и число несовпадающих опросов подряд. */
+    private Integer capBase;
+    private boolean thrState;
+    private int thrStreak;
+    private String coolType;
+    /** Штатная цель модели и разрешенные значения (из FAN_PID_CONTROL_CONFIG). */
+    private int fanAuto = -1;
+    private int[] fanOpts = new int[0];
 
     private Monitor(Context c) { ctx = c; }
 
@@ -149,7 +176,22 @@ public final class Monitor {
     public synchronized String apiJson() {
         try {
             JSONObject o = new JSONObject();
-            o.put("latest", latest);
+            JSONObject l = latest;
+            // выбор цели вентиляторов берем текущий, а не из последнего замера: замер мог быть сделан
+            // до нажатия, и тогда экран на секунду показал бы прежнее значение (галочка «мигала»)
+            JSONObject fc = l.optJSONObject("fan_ctl");
+            if (fc != null) {
+                JSONObject f = new JSONObject(fc.toString());
+                Integer lo = fanLo, hi = fanHi;
+                f.put("lo", lo == null ? 0 : lo);
+                f.put("hi", hi == null ? 0 : hi);
+                f.put("boot", fanBoot);
+                Integer want = "hi".equals(f.optString("use")) ? hi : lo;
+                if (want != null) f.put("custom", want); else f.remove("custom");
+                l = new JSONObject(l.toString());
+                l.put("fan_ctl", f);
+            }
+            o.put("latest", l);
             JSONArray a = new JSONArray();
             for (JSONObject h : history) a.put(h);
             o.put("history", a);
@@ -231,6 +273,119 @@ public final class Monitor {
             dlp().transact(T_GET, d, r, 0); r.readException();
             return r.readInt();
         } catch (Exception e) { return null; } finally { d.recycle(); r.recycle(); }
+    }
+
+    private int setInt(int idx, int value) throws Exception {
+        Parcel d = Parcel.obtain(), r = Parcel.obtain();
+        try {
+            d.writeInterfaceToken(DLP); d.writeInt(idx); d.writeInt(value);
+            dlp().transact(T_SET, d, r, 0); r.readException();
+            return r.readInt();
+        } finally { d.recycle(); r.recycle(); }
+    }
+
+    // ------------------------------------------------------------------ цель вентиляторов
+
+    static boolean fanCtlModel(String m) {
+        if (m == null) return false;
+        String u = m.trim().toUpperCase(Locale.ROOT);
+        for (String p : FAN_CTL_MODELS) if (u.startsWith(p)) return true;
+        return false;
+    }
+
+    public boolean hasFanTarget() { loadFanPrefs(); return fanLo != null || fanHi != null; }
+
+    private android.content.SharedPreferences prefs() { return ctx.getSharedPreferences("overlay", Context.MODE_PRIVATE); }
+
+    /** Номер загрузки: Settings.Global.BOOT_COUNT, если его нет — время загрузки в минутах (со знаком минус). */
+    private int bootId() {
+        try {
+            int n = android.provider.Settings.Global.getInt(ctx.getContentResolver(), "boot_count", -1);
+            if (n >= 0) return n;
+        } catch (Throwable ignored) {}
+        return -(int) ((System.currentTimeMillis() - SystemClock.elapsedRealtime()) / 60000);
+    }
+
+    private static boolean sameBoot(int a, int b) { return a >= 0 ? a == b : b < 0 && Math.abs(a - b) <= 1; }
+
+    /** Есть ли сохраненная цель, которую надо держать после включения (для автозапуска). */
+    static boolean bootTargetSaved(Context c) {
+        android.content.SharedPreferences p = c.getSharedPreferences("overlay", Context.MODE_PRIVATE);
+        return p.getBoolean("fan_boot", false) && (p.getInt("fan_lo", 0) > 0 || p.getInt("fan_hi", 0) > 0);
+    }
+
+    /** Выбор из настроек: та же загрузка — восстанавливаем (приложение перезапускали); новая — только с «Применять после включения». */
+    private synchronized void loadFanPrefs() {
+        if (fanLoaded) return;
+        fanLoaded = true;
+        android.content.SharedPreferences p = prefs();
+        fanBoot = p.getBoolean("fan_boot", false);
+        int lo = p.getInt("fan_lo", 0), hi = p.getInt("fan_hi", 0);
+        if (lo <= 0 && hi <= 0) return;
+        if (fanBoot || sameBoot(bootId(), p.getInt("fan_bootid", Integer.MIN_VALUE))) {
+            fanLo = lo > 0 ? lo : null;
+            fanHi = hi > 0 ? hi : null;
+            p.edit().putInt("fan_bootid", bootId()).apply();
+        } else {
+            p.edit().remove("fan_lo").remove("fan_hi").apply();
+        }
+    }
+
+    private boolean allowed(int t) {
+        if (t <= 0) return true;
+        for (int v : fanOpts) if (v == t) return true;
+        return false;
+    }
+
+    /** lo — для яркости 1–6, hi — для 7–10; t > 0 — своя (только из списка модели), ≤ 0 — как в прошивке. Возвращает "ok" или текст ошибки. */
+    public String setFanTargets(int lo, int hi) {
+        try {
+            limits();
+            loadFanPrefs();
+            if (!fanCtlModel(model()) || fanAuto <= 0) return "unsupported";
+            if (!allowed(lo) || !allowed(hi)) return "bad_value";
+            fanLo = lo > 0 ? lo : null;
+            fanHi = hi > 0 ? hi : null;
+            prefs().edit().putInt("fan_lo", Math.max(0, lo)).putInt("fan_hi", Math.max(0, hi)).putInt("fan_bootid", bootId()).apply();
+            applyFanTarget(latest, null, true);
+            synchronized (this) { notifyAll(); }
+            return "ok";
+        } catch (Exception e) { return "error: " + e; }
+    }
+
+    public void setFanBoot(boolean on) {
+        loadFanPrefs();
+        fanBoot = on;
+        prefs().edit().putBoolean("fan_boot", on).putInt("fan_bootid", bootId()).apply();
+    }
+
+    public boolean fanBoot() { loadFanPrefs(); return fanBoot; }
+
+    /** Какая цель нужна сейчас: фиксированные яркие режимы, ступени 7–10 и неизвестная яркость — «яркая». */
+    private static boolean useHi(JSONObject s) {
+        int mode = s.optInt("brightness_mode", -1);
+        if (mode == 15 || mode == 16 || mode == 22 || mode == 23) return true;
+        return !s.has("brightness_menu") || s.optInt("brightness_menu", 10) >= FAN_HI_LEVEL;
+    }
+
+    /** Ставит нужную цель. Пишем, только когда нужная цель изменилась (ступень яркости, выбор в меню)
+     *  или прошивка сбросила ее в −1 (после белого экрана). На белом экране приоритет у прошивки. */
+    private synchronized Integer applyFanTarget(JSONObject s, Integer fcNow, boolean user) {
+        if (s == null || s.optInt("brightness_mode", -1) == MODE_WHITE) return fcNow;
+        try {
+            if (fcNow == null) fcNow = getInt(IDX_FAN_TARGET);
+            if (fcNow == null) return null;
+            Integer want = useHi(s) ? fanHi : fanLo;
+            int w = want == null ? -1 : want;
+            boolean changed = fanApplied == null ? (want != null || fcNow > 0 && allowed(fcNow) && (fanLo != null || fanHi != null))
+                    : fanApplied != w;
+            if (want != null && (changed || fcNow == -1) && fcNow != w) { setInt(IDX_FAN_TARGET, w); fcNow = w; }
+            // вернуть авто: только если сейчас стоит наша цель (не трогаем чужую и цель белого экрана)
+            // (выбор «авто» в меню — тоже, даже если приложение перезапускали и не помнит, что ставило)
+            else if (want == null && (changed || user) && fcNow > 0 && allowed(fcNow)) { setInt(IDX_FAN_TARGET, -1); fcNow = -1; }
+            fanApplied = w;
+        } catch (Exception ignored) {}
+        return fcNow;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -331,6 +486,19 @@ public final class Monitor {
                     for (double[] r : pid) if (r.length > 0) { p.put(r[0]); fx.put(r.length > 2 && r[1] >= r[2]); }
                     l.put("pid_targets", p);
                     l.put("pid_fixed", fx);
+                    // цель вентиляторов: штатная — первая строка PID; по 3 шага по 2 °C вниз и вверх,
+                    // но не ближе 4 °C к снижению яркости (если порога нет — не выше цели ярких режимов)
+                    double base = -1, bright = -1;
+                    for (double[] r : pid) if (r.length > 2 && r[1] < r[2]) { if (base < 0) base = r[0]; bright = Math.max(bright, r[0]); }
+                    if (base > 0) {
+                        int b = (int) Math.round(base);
+                        int hi = Math.min(b + 6, ld != null ? (int) Math.floor(ld - 4) : (int) Math.floor(bright));
+                        List<Integer> o = new ArrayList<>();
+                        for (int v = b - 6; v <= hi; v += 2) if (v != b) o.add(v);
+                        fanAuto = b;
+                        fanOpts = new int[o.size()];
+                        for (int i = 0; i < fanOpts.length; i++) fanOpts[i] = o.get(i);
+                    }
                 }
                 dmdMux = list(xml, "TEMPERATURE_DMD_CHANNEL_MUX");
                 modeCurrents.clear();
@@ -515,6 +683,16 @@ public final class Monitor {
         if (duty != null) { JSONArray d = new JSONArray(); for (int v : duty) d.put(v); th.put("fan_duty", d); }
         Integer fanMode = getInt(IDX_FAN_MODE);
         th.put("fan_mode", fanMode != null && fanMode == 0 ? "PID" : "manual");
+        JSONObject fc = null;
+        Integer fcNow = null;
+        if (fanMode != null && fanMode == 0 && fanAuto > 0 && fanCtlModel(model)) {
+            fcNow = getInt(IDX_FAN_TARGET);
+            fc = new JSONObject();
+            fc.put("auto", fanAuto);
+            JSONArray o = new JSONArray();
+            for (int v : fanOpts) o.put(v);
+            fc.put("opts", o);
+        }
         Integer ov = getInt(IDX_OVERLAP_LEVEL);
         th.put("overlap_level", ov == null ? 0 : ov);
         // статус вентиляторов (0x76) не запрашиваем: прошивка при этом еще раз читает тахометр
@@ -586,6 +764,21 @@ public final class Monitor {
             if (bm.find()) curLevel = levelFromCurrent(Integer.parseInt(bm.group(1)), lim.optJSONArray("interp_r"));
         }
         if (!s.has("brightness_menu") && curLevel != null) { s.put("brightness_menu", curLevel); s.put("brightness_exact", false); }
+        if (fc != null) {
+            // две цели: для яркости 1–6 и 7–10 (ступень меню; с AL 2.0 меню стоит на 10 — «яркая»)
+            loadFanPrefs();
+            if (fanLo != null || fanHi != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
+            boolean hi = useHi(s);
+            Integer want = hi ? fanHi : fanLo;
+            fc.put("now", fcNow == null ? -1 : fcNow);
+            fc.put("lo", fanLo == null ? 0 : fanLo);
+            fc.put("hi", fanHi == null ? 0 : fanHi);
+            fc.put("use", hi ? "hi" : "lo");
+            fc.put("boot", fanBoot);
+            fc.put("level", FAN_HI_LEVEL);
+            if (want != null) fc.put("custom", want);
+            s.put("fan_ctl", fc);
+        }
         // AL 2.0 / Dynamic Black: флаг, который пишет сама прошивка; мощность лазеров меняется по сцене — показываем ступень по току
         int al = -1;
         try { al = android.provider.Settings.System.getInt(ctx.getContentResolver(), "dynamic_black_enabled", -1); } catch (Throwable ignored) {}
@@ -609,7 +802,16 @@ public final class Monitor {
         Integer fMin = readInt("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq");
         if (fMin != null) s.put("freq_min", fMin / 1000);
         if (freq != null && fHw != null && fHw > 0) s.put("freq_pct", Math.round(freq * 100f / fHw));
-        boolean thr = (fCap != null && fHw != null && fCap < fHw) || (cool != null && cool > 0);
+        // Троттлинг — только когда процессор правда горячий (не дальше 15 °C до порога): на платформе N3 / IRIS
+        // потолок частоты и cooling_device0 бывают «ниже нормы» и при 60–70 °C. Потолок сравниваем с наибольшим
+        // за сеанс, охлаждение учитываем только процессорное; состояние меняется после 2 опросов подряд.
+        if (coolType == null) { String ct = readFile("/sys/class/thermal/cooling_device0/type"); coolType = ct == null ? "" : ct.trim().toLowerCase(Locale.ROOT); }
+        if (fCap != null && (capBase == null || fCap > capBase)) capBase = fCap;
+        int tripC = trip != null ? trip / 1000 : 123;
+        boolean hot = cpu != null && cpu / 1000 >= tripC - 15;
+        boolean rawThr = hot && ((fCap != null && capBase != null && fCap < capBase) || (coolType.contains("cpu") && cool != null && cool > 0));
+        if (rawThr != thrState) { if (++thrStreak >= 2) { thrState = rawThr; thrStreak = 0; } } else thrStreak = 0;
+        boolean thr = thrState;
         long nowS = now();
         if (thr) { if (throttleSince == null) throttleSince = nowS; if (throttleFirst == null) throttleFirst = nowS; }
         else throttleSince = null;
