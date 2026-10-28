@@ -12,8 +12,8 @@ body{margin:0;background:var(--bg);color:var(--text);font:1.75vh/1.45 -apple-sys
 main{height:100vh;padding:1.6vh 1.8vw 1.4vh;display:flex;flex-direction:column;gap:1.1vh}
 h1{font-size:3vh;line-height:1.15;margin:0;font-weight:700}
 .muted{color:var(--muted)}
-.head{display:flex;justify-content:space-between;gap:18px;align-items:center}
-.ttl{display:flex;align-items:baseline;gap:1.2vw;min-width:0}
+.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.ttl{display:flex;flex-direction:column;align-items:flex-start;gap:.5vh;min-width:0}.ttl h1{line-height:1}.ttl-top{display:flex;align-items:center;gap:1vw}
 .brand{display:inline-flex;align-items:center;gap:.5vw;align-self:center;color:var(--muted);font-size:1.9vh;font-weight:600;white-space:nowrap}.brand svg{height:3.2vh;width:3.2vh;flex:none}
 html.narrow .brand b{display:none}
 .device{color:var(--muted);font-size:1.5vh;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.device{display:none}
@@ -80,7 +80,7 @@ html.narrow .brand b{display:none}
 .wn-row small{color:var(--muted);font-size:1.4vh;margin-left:.5vw}.wn-row.all{margin-bottom:1vh}
 .wn-row.on{border-color:var(--line)}.wn-row:focus{border-color:var(--blue)}
 .wn-row b{flex:none;min-width:3.6vw;text-align:center;border-radius:7px;padding:.2vh .5vw;font-size:1.55vh;background:#2b3038;color:var(--muted)}.wn-row.on b{background:#1f3a29;color:var(--green)}
-.wi{color:var(--yellow)}
+.wi{color:var(--yellow)}#updBtn,#donBtn,.is-app #warnBtn,.is-app #cornerBtn{display:inline-flex;align-items:center;gap:.45vw}.btn .wi,.btn .ui,.btn .ic,.btn .hrt{display:inline-flex;align-items:center;line-height:1}.ico{width:1.35em;height:1.35em;display:block;flex:none}
 .lhead{display:flex;justify-content:space-between;align-items:center;gap:.5vw}.lhead .label{margin-bottom:0}
 .btn.tgt{font-size:1.35vh;padding:.1vh .6vw;border-width:1px;border-radius:7px;color:var(--muted);margin:-.4vh 0 .4vh;white-space:nowrap}.btn.tgt.on{color:var(--orange);border-color:#6b4a26}.btn.tgt:focus{color:var(--text);border-color:var(--blue)}
 #tgt .tgt-reset{color:var(--orange);font-weight:600;font-size:1.45vh}
@@ -112,16 +112,30 @@ html.narrow .kpis{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
 html.narrow .infos{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
 html.narrow .charts,html.narrow .prot{grid-template-columns:1fr}
 html.narrow .chart canvas{flex:none;height:260px}
+.brand .ver{color:var(--muted);font-weight:500;margin-left:.3vw}
+.btn.upd{white-space:nowrap;position:relative}.btn.upd .ui{color:var(--blue)}.btn.upd.new{border-color:#2f5d3c;color:var(--green)}.btn.upd.new .ui{color:var(--green)}.btn.upd:focus{border-color:var(--blue)}
+.btn.upd .nb{display:inline-block;width:.9vh;height:.9vh;border-radius:50%;background:var(--green);position:absolute;top:.5vh;right:.45vw;visibility:hidden}.btn.upd.new .nb{visibility:visible}
+#upd{position:fixed;top:0;right:0;bottom:0;left:0;z-index:20;visibility:hidden;background:transparent;transition:background .18s,visibility 0s .18s}#upd.open{visibility:visible;background:#0000005c;transition:background .18s}
+#upd .wn-box{right:auto;padding-top:2vh;transform-origin:var(--ox,10%) 0}#upd.open .wn-box{opacity:1;transform:none}#upd .wn-box::before{right:auto;left:var(--cx,40px)}
+.up-wrap{display:flex;gap:1.3vw;align-items:flex-start}
+.up-qr{width:17vh;height:17vh;flex:none;background:#fff;border-radius:.8vh}.up-qr svg{width:100%;height:100%;display:block;shape-rendering:crispEdges}
+.up-txt{display:flex;flex-direction:column;gap:.8vh;min-width:22vw}
+.up-cur{font-size:1.65vh}.up-cur b{font-size:2.1vh}
+.up-st{font-size:1.65vh;color:var(--muted)}.up-st.ok,.up-st.new{color:var(--green)}.up-st.new{font-weight:600}.up-st.err{color:var(--red)}.up-st small{display:block;color:var(--muted);font-weight:400;font-size:1.4vh}
+.up-btns{display:flex;gap:.6vw;flex-wrap:wrap}.up-btns .btn{font-size:1.6vh;padding:.55vh .8vw}.up-btns a.btn{text-decoration:none}
+.btn.go{border-color:#2f5d3c;color:var(--green)}.btn.go:focus{border-color:var(--blue)}
+.up-new{padding:.9vh 1vw;border:1px solid #2f5d3c;border-radius:8px;background:#16201a}.up-new h4{margin:0 0 .5vh;font-size:1.45vh;color:var(--green);font-weight:600}.up-new ul{margin:0;padding-left:1.1vw;font-size:1.45vh;line-height:1.4;color:var(--text)}.up-new li{margin:.2vh 0}.up-new .more{color:var(--muted);font-size:1.3vh;margin-top:.3vh}
+.up-note{color:var(--muted);font-size:1.35vh;line-height:1.35}.up-url{font-size:1.35vh;color:var(--muted)}
 </style>
 </head>
 <body><main>
-<div class="head"><div class="ttl"><span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="5" height="9" rx="1" fill="#F07070"/><rect x="9.5" y="4" width="5" height="16" rx="1" fill="#5DD879"/><rect x="16" y="13.5" width="5" height="6.5" rx="1" fill="#6AA8FF"/><rect x="2" y="21.2" width="20" height="1.4" rx=".7" fill="#8A93A3"/></svg><b>JMGO Temp</b></span><h1 id="name">JMGO</h1><span class="device" id="device"></span></div>
+<div class="head"><div class="ttl"><div class="ttl-top"><span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="5" height="9" rx="1" fill="#F07070"/><rect x="9.5" y="4" width="5" height="16" rx="1" fill="#5DD879"/><rect x="16" y="13.5" width="5" height="6.5" rx="1" fill="#6AA8FF"/><rect x="2" y="21.2" width="20" height="1.4" rx=".7" fill="#8A93A3"/></svg><b>JMGO Temp</b><span class="ver" id="hdrVer"></span></span><button id="updBtn" class="btn upd" onclick="openUpd()"><span class="ui"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M20.5 3.5v5h-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span data-i="updBtn"></span><span class="nb"></span></button></div><h1 id="name">JMGO</h1><span class="device" id="device"></span></div>
 <div class="hdr-right">
 <button id="ovBtn" class="btn app-only" onclick="Android.toggleOverlay();setTimeout(updOverlayBtn,400)"></button>
 <button id="cornerBtn" class="btn app-only" onclick="Android.cycleCorner();updOverlayBtn()"></button>
 <button id="langBtn" class="btn" onclick="toggleLang()">RU</button>
-<button id="warnBtn" class="btn app-only" onclick="openWarn()"><span class="wi">&#9888;&#65038;</span> <span data-i="warnBtn"></span></button>
-<button id="donBtn" class="btn don" onclick="openDonate()"><span class="hrt">&#9829;&#65038;</span> <span data-i="donBtn"></span></button>
+<button id="warnBtn" class="btn app-only" onclick="openWarn()"><span class="wi"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 22 20.5H2z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="17.6" r="1.4" fill="currentColor"/></svg></span><span data-i="warnBtn"></span></button>
+<button id="donBtn" class="btn don" onclick="openDonate()"><span class="hrt"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.3 3 4.5 6.7 4.5c2.2 0 3.6 1.3 5.3 3.3 1.7-2 3.1-3.3 5.3-3.3 3.7 0 5.8 3.8 4.3 7.2C19.5 16.4 12 21 12 21z" fill="currentColor"/></svg></span><span data-i="donBtn"></span></button>
 <div class="status" id="status"></div></div></div>
 <div id="error"></div><div id="ovWarn"></div><div id="alert"></div><div id="popDiag"></div>
 <section class="kpis">
@@ -150,6 +164,10 @@ html.narrow .chart canvas{flex:none;height:260px}
 <div class="wn-btns"><button class="btn" id="wnTest" onclick="Android.testWarn()" data-i="wnTest"></button><span class="wn-hint" data-i="wnBack"></span></div></div></div>
 <div id="tgt" onclick="if(event.target===this)closeTgt()"><div class="wn-box"><p><span data-i="tgtText"></span><br><span data-i="tgtText2"></span></p><div id="tgtList"></div><p class="tgt-err" id="tgtErr"></p>
 <div class="wn-btns"><span class="tgt-reset" id="tgtReset"></span><span class="wn-hint" data-i="wnBack"></span></div></div></div>
+<div id="upd" onclick="if(event.target===this)closeUpd()"><div class="wn-box" id="updBox"><div class="up-wrap"><div class="up-qr"><svg viewBox="0 0 41 41"><path fill="#fff" d="M0 0h41v41h-41z"/><path stroke="#000" d="M4 4.5h7m1 0h3m5 0h3m2 0h2m3 0h7m-33 1h1m5 0h1m1 0h1m2 0h1m4 0h1m3 0h1m5 0h1m5 0h1m-33 1h1m1 0h3m1 0h1m4 0h2m1 0h1m1 0h1m3 0h2m4 0h1m1 0h3m1 0h1m-33 1h1m1 0h3m1 0h1m2 0h2m4 0h1m1 0h1m1 0h4m3 0h1m1 0h3m1 0h1m-33 1h1m1 0h3m1 0h1m2 0h6m1 0h1m2 0h3m1 0h1m2 0h1m1 0h3m1 0h1m-33 1h1m5 0h1m2 0h1m1 0h3m3 0h1m2 0h2m4 0h1m5 0h1m-33 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-23 1h1m1 0h1m1 0h1m4 0h1m-19 1h1m4 0h5m2 0h3m1 0h1m5 0h1m1 0h1m5 0h2m-31 1h1m1 0h1m2 0h1m3 0h1m1 0h1m2 0h1m1 0h2m1 0h3m4 0h3m-29 1h2m2 0h2m1 0h1m5 0h4m3 0h1m1 0h2m2 0h1m1 0h2m-32 1h5m2 0h2m1 0h1m1 0h1m3 0h1m2 0h1m2 0h1m1 0h8m-32 1h1m2 0h1m1 0h3m1 0h3m3 0h1m1 0h2m5 0h1m1 0h2m4 0h1m-33 1h1m4 0h1m3 0h1m2 0h2m2 0h1m1 0h6m2 0h2m1 0h1m1 0h2m-31 1h1m1 0h3m3 0h1m4 0h4m1 0h1m1 0h1m2 0h2m2 0h3m-32 1h1m1 0h1m1 0h2m1 0h1m1 0h1m2 0h3m1 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h2m1 0h1m-31 1h1m3 0h1m6 0h5m4 0h1m1 0h2m1 0h3m2 0h1m-32 1h3m1 0h1m1 0h1m2 0h2m1 0h1m1 0h1m1 0h1m1 0h2m2 0h1m2 0h1m2 0h2m1 0h1m-32 1h2m2 0h4m2 0h1m1 0h3m1 0h1m1 0h1m2 0h3m2 0h1m1 0h2m1 0h1m-33 1h1m1 0h1m1 0h2m1 0h2m1 0h2m2 0h1m3 0h3m4 0h2m1 0h3m-28 1h5m3 0h1m7 0h1m2 0h1m1 0h1m2 0h3m1 0h1m-32 1h1m1 0h1m6 0h1m1 0h2m3 0h1m1 0h2m2 0h2m3 0h2m1 0h1m-31 1h1m2 0h1m2 0h1m1 0h1m1 0h4m1 0h1m1 0h1m2 0h1m3 0h2m1 0h2m1 0h2m-32 1h1m3 0h1m2 0h2m3 0h2m1 0h1m1 0h1m2 0h1m1 0h1m2 0h2m1 0h1m1 0h1m1 0h1m-33 1h7m3 0h1m1 0h1m1 0h1m1 0h2m1 0h2m2 0h7m-22 1h2m3 0h3m3 0h1m3 0h2m3 0h1m1 0h3m-33 1h7m1 0h6m1 0h1m1 0h1m2 0h5m1 0h1m1 0h1m1 0h2m-32 1h1m5 0h1m2 0h1m1 0h1m1 0h1m2 0h1m1 0h1m4 0h2m3 0h4m-32 1h1m1 0h3m1 0h1m7 0h4m1 0h1m2 0h1m1 0h6m1 0h2m-33 1h1m1 0h3m1 0h1m4 0h1m3 0h7m1 0h3m1 0h3m2 0h1m-33 1h1m1 0h3m1 0h1m3 0h6m2 0h3m2 0h1m1 0h1m1 0h2m2 0h2m-33 1h1m5 0h1m1 0h2m1 0h1m2 0h2m4 0h1m1 0h2m1 0h6m-31 1h7m4 0h1m2 0h1m2 0h3m2 0h4m1 0h1m3 0h1"/></svg></div>
+<div class="up-txt"><div class="up-cur" id="upCur"></div><div class="up-st" id="upSt"></div><div class="up-btns" id="upBtns"></div><div class="up-new" id="upNew" style="display:none"></div>
+<div class="up-note"><span data-i="upNote1"></span><br><span data-i="upNote2"></span></div></div></div>
+<div class="wn-btns"><span class="up-url">github.com/jmgotemp/jmgo-temp/releases</span><span class="wn-hint" data-i="wnBack"></span></div></div></div>
 <div id="donate" onclick="if(event.target===this)closeDonate()"><div class="dn-box"><div class="dn-qr"><svg viewBox="0 0 37 37"><path fill="#fff" d="M0 0h37v37h-37z"/><path stroke="#000" d="M4 4.5h7m2 0h1m1 0h1m1 0h1m2 0h1m2 0h1m2 0h7m-29 1h1m5 0h1m3 0h2m1 0h3m1 0h2m1 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m2 0h2m2 0h5m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m1 0h1m1 0h3m2 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h1m2 0h2m1 0h1m1 0h1m3 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h3m1 0h3m3 0h2m2 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-18 1h2m1 0h1m2 0h4m-21 1h1m2 0h1m1 0h2m1 0h1m2 0h2m2 0h2m4 0h1m1 0h1m-23 1h2m4 0h2m1 0h1m1 0h1m1 0h2m4 0h1m1 0h1m2 0h1m2 0h1m-29 1h1m3 0h1m1 0h1m1 0h5m6 0h1m1 0h1m1 0h1m1 0h3m-26 1h2m1 0h1m3 0h1m4 0h2m2 0h2m1 0h1m4 0h2m-28 1h2m3 0h2m3 0h3m3 0h2m1 0h5m1 0h1m1 0h2m-28 1h1m1 0h1m3 0h1m3 0h1m3 0h6m-20 1h1m2 0h1m1 0h1m2 0h2m6 0h2m6 0h4m-29 1h2m2 0h2m3 0h1m1 0h7m6 0h2m1 0h1m-28 1h3m3 0h1m2 0h2m2 0h2m2 0h2m1 0h1m6 0h1m-26 1h2m1 0h1m2 0h1m1 0h2m4 0h2m3 0h3m1 0h1m2 0h1m-29 1h1m1 0h2m2 0h1m1 0h2m1 0h3m2 0h2m3 0h1m1 0h1m3 0h2m-27 1h2m1 0h1m3 0h1m2 0h2m1 0h1m1 0h5m2 0h1m2 0h2m-29 1h1m5 0h3m1 0h1m3 0h1m4 0h6m1 0h1m-19 1h3m2 0h1m2 0h2m1 0h2m3 0h1m1 0h3m-29 1h7m5 0h3m1 0h1m3 0h1m1 0h1m1 0h1m2 0h1m-28 1h1m5 0h1m1 0h1m4 0h1m1 0h1m3 0h2m3 0h3m-27 1h1m1 0h3m1 0h1m3 0h2m2 0h1m1 0h2m2 0h5m3 0h1m-29 1h1m1 0h3m1 0h1m1 0h2m1 0h4m4 0h2m1 0h6m-28 1h1m1 0h3m1 0h1m2 0h1m1 0h3m2 0h1m2 0h3m2 0h3m1 0h1m-29 1h1m5 0h1m3 0h1m2 0h1m2 0h5m2 0h2m2 0h1m-28 1h7m1 0h1m1 0h4m1 0h1m1 0h1m2 0h1m3 0h2m1 0h1"/></svg></div><div class="dn-txt"><h2 data-i="dnTitle"></h2><p data-i="dnText"></p><div class="dn-url" id="dnUrl">boosty.to/jmgotemp</div><button class="btn" id="dnClose" onclick="closeDonate()" data-i="dnClose"></button></div></div></div>
 <script>
 const IS_APP=typeof Android!=='undefined';
@@ -157,6 +175,11 @@ if(IS_APP)document.body.classList.add('is-app');
 function setNarrow(){document.documentElement.classList.toggle('narrow',!IS_APP&&(innerHeight<700||innerWidth/innerHeight<4/3))}setNarrow();
 const I18N={
 ru:{
+updBtn:'Проверить обновление',upCur:v=>`У вас <b>JMGO Temp ${v}</b>`,upNew:v=>`Вышла версия ${v}`,upOk:'✓ Это последняя версия',upNever:'Еще не проверялось',
+upChecked:t=>`проверено ${t}`,upToday:'сегодня в',upChecking:'Проверяю…',upDl:p=>`Скачивание… ${p} %`,upInst:'Подтвердите установку в окне Android.',
+upErr_net:'Нет связи с GitHub. Проверьте интернет.',upErr_dl:'Не удалось скачать. Попробуйте еще раз или скачайте по QR.',upErr_inst:'Установка не прошла. Скачайте по QR.',
+upErr_cancel:'Установка отменена.',upErr_perm:'Разрешите JMGO Temp установку приложений и нажмите еще раз.',upErr_perm_none:'Прошивка не дает ставить из приложения — скачайте по QR.',upErr_no_apk:'В релизе нет APK — скачайте по QR.',
+upCheck:'Проверить',upNewT:v=>`Что нового в ${v}`,upMore:n=>`… и еще ${n} — на GitHub`,upInstall:'Скачать и установить',upOpen:'Открыть страницу',upNote1:'Ставится поверх, настройки сохраняются.',upNote2:'QR — все версии на GitHub.',
  connecting:'подключение…',connected:'подключен',offline:'нет связи',error:'ошибка: ',subtitle:'Мониторинг проектора',
  updated:'обновлено',uptime:(h,m)=>`работает ${h} ч ${m} мин`,
  ovBtn:on=>`Компактный режим: ${on?'вкл':'выкл'}`,corner:'Угол',
@@ -195,9 +218,9 @@ ru:{
  warnBtn:'Предупреждения',wnTitle:'Предупреждения поверх фильма',
  wnText:'После выхода из приложения оно раз в 5 с проверяет температуры и при перегреве на 20 с показывает сообщение слева вверху. Если выключить все — после выхода ничего не делает.',
  wnTest:'Пример предупреждения',wnBack:'«Назад» на пульте — закрыть',
- tgtBtn:t=>t?`Изменено: ${t} ▾`:'Изменить °C ▾',tgtText:'Температура лазеров, которую держат вентиляторы.',tgtAutoTxt:'Авто — как в прошивке.',tgtText2:'Ниже — холоднее и громче, выше — тише и горячее.',tgtReset:'↻ Сбросится после перезагрузки проектора.',tgtKeep:'↻ Сохранится после перезагрузки проектора.',
- tgtLo:'Яркость 1–6',tgtHi:'Яркость 7–10',tgtBoot:'Сохранять после перезагрузки',
- tgtAuto:'авто',popDiag:'⚠ Окно не показалось. Пришлите, пожалуйста, фото этой строки:',tgtFail:'Не удалось:',
+ tgtBtn:t=>t?`Изменено: ${t} ▾`:'Изменить °C ▾',tgtText:'Температура лазеров, которую держат вентиляторы.',tgtAutoTxt:'Дефолт — как в прошивке.',tgtText2:'Ниже — холоднее и громче, выше — тише и горячее.',tgtReset:'↻ Сбросится после перезагрузки проектора.',tgtKeep:'↻ Сохранится после перезагрузки проектора.',
+ tgtLo:'Яркость 1–3',tgtMid:'Яркость 4–6',tgtHi:'Яркость 7–10',tgtBoot:'Сохранять после перезагрузки',
+ tgtAuto:'дефолт',popDiag:'⚠ Окно не показалось. Пришлите, пожалуйста, фото этой строки:',tgtFail:'Не удалось:',
  wnItems:[['all','Все предупреждения',''],
   ['w_las','Лазеры','за 1,5 °C до снижения яркости'],
   ['w_dmd','Матрица DMD','за 3 °C до отключения'],
@@ -213,6 +236,11 @@ nFw:c=>`Пороги — из прошивки этого проектора${c?
  aThr:(t,f)=>`Процессор троттлит с ${t}: частота ограничена до ${f} МГц.`
 },
 en:{
+updBtn:'Check for updates',upCur:v=>`You have <b>JMGO Temp ${v}</b>`,upNew:v=>`Version ${v} is out`,upOk:'✓ This is the latest version',upNever:'Not checked yet',
+upChecked:t=>`checked ${t}`,upToday:'today at',upChecking:'Checking…',upDl:p=>`Downloading… ${p} %`,upInst:'Confirm the install in the Android window.',
+upErr_net:'No connection to GitHub. Check the internet.',upErr_dl:'Download failed. Try again or use the QR.',upErr_inst:'Install failed. Download via the QR.',
+upErr_cancel:'Install cancelled.',upErr_perm:'Allow JMGO Temp to install apps, then press again.',upErr_perm_none:'The firmware blocks installs from apps — use the QR.',upErr_no_apk:'No APK in the release — use the QR.',
+upCheck:'Check',upNewT:v=>`What's new in ${v}`,upMore:n=>`… and ${n} more — on GitHub`,upInstall:'Download and install',upOpen:'Open the page',upNote1:'Installs over the old one, settings are kept.',upNote2:'QR — all versions on GitHub.',
  connecting:'connecting…',connected:'connected',offline:'offline',error:'error: ',subtitle:'Projector monitor',
  updated:'updated',uptime:(h,m)=>`uptime ${h} h ${m} min`,
  ovBtn:on=>`Compact mode: ${on?'on':'off'}`,corner:'Corner',
@@ -251,9 +279,9 @@ en:{
  warnBtn:'Warnings',wnTitle:'Warnings over the movie',
  wnText:'After you leave the app it checks temperatures every 5 s and, if something overheats, shows a message at the top left for 20 s. With everything off, it does nothing after you leave.',
  wnTest:'Example warning',wnBack:'Back on the remote — close',
- tgtBtn:t=>t?`Changed: ${t} ▾`:'Change °C ▾',tgtText:'Laser temperature the fans hold.',tgtAutoTxt:'Auto is the firmware default.',tgtText2:'Lower is cooler and louder, higher is quieter and hotter.',tgtReset:'↻ Resets after the projector reboots.',tgtKeep:'↻ Kept after the projector reboots.',
- tgtLo:'Brightness 1–6',tgtHi:'Brightness 7–10',tgtBoot:'Keep after reboot',
- tgtAuto:'auto',popDiag:'⚠ The window did not appear. Please send a photo of this line:',tgtFail:'Failed:',
+ tgtBtn:t=>t?`Changed: ${t} ▾`:'Change °C ▾',tgtText:'Laser temperature the fans hold.',tgtAutoTxt:'Default is the firmware setting.',tgtText2:'Lower is cooler and louder, higher is quieter and hotter.',tgtReset:'↻ Resets after the projector reboots.',tgtKeep:'↻ Kept after the projector reboots.',
+ tgtLo:'Brightness 1–3',tgtMid:'Brightness 4–6',tgtHi:'Brightness 7–10',tgtBoot:'Keep after reboot',
+ tgtAuto:'default',popDiag:'⚠ The window did not appear. Please send a photo of this line:',tgtFail:'Failed:',
  wnItems:[['all','All warnings',''],
   ['w_las','Lasers','1.5 °C before dimming'],
   ['w_dmd','DMD chip','3 °C before shutdown'],
@@ -277,7 +305,7 @@ let last=null;
 function applyStatic(){document.documentElement.lang=LANG;document.querySelectorAll('[data-i]').forEach(e=>e.textContent=T(e.dataset.i));
  $('langBtn').textContent=LANG==='ru'?'RU':'EN';$('appLabel').textContent=T(IS_APP?'app':'dash');$('fan1n').textContent=T('fanN',1);$('fan2n').textContent=T('fanN',2);
  if(!last){$('device').textContent=T('subtitle');$('status').innerHTML='<i class="dot"></i>'+T('connecting')}}
-function toggleLang(){LANG=LANG==='ru'?'en':'ru';try{IS_APP?Android.setLang(LANG):localStorage.setItem('jmgo_lang',LANG)}catch(e){}applyStatic();if(last)render(last);updOverlayBtn()}
+function toggleLang(){LANG=LANG==='ru'?'en':'ru';try{IS_APP?Android.setLang(LANG):localStorage.setItem('jmgo_lang',LANG)}catch(e){}applyStatic();if(last)render(last);updOverlayBtn();renderUpd()}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function set(id,v){$(id).innerHTML=v}
 function openDonate(){popOpened();$('donate').classList.add('open');popFocus(()=>$('dnClose'))}
@@ -293,41 +321,43 @@ function openWarn(){renderWarn();const r=$('warnBtn').getBoundingClientRect(),b=
  b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`);
  popOpened();$('warnBtn').classList.add('on');$('warn').classList.add('open');popFocus(()=>$('wnList').querySelector('.btn'))}
 function closeWarn(){$('warn').classList.remove('open');$('warnBtn').classList.remove('on');$('warnBtn').focus()}
-function onBack(){if($('donate').classList.contains('open')){closeDonate();return true}if($('warn').classList.contains('open')){closeWarn();return true}if($('tgt').classList.contains('open')){closeTgt();return true}return false}
+function onBack(){if($('upd').classList.contains('open')){closeUpd();return true}if($('donate').classList.contains('open')){closeDonate();return true}if($('warn').classList.contains('open')){closeWarn();return true}if($('tgt').classList.contains('open')){closeTgt();return true}return false}
 // Цель температуры лазеров для вентиляторов (только приложение, N5/N5S/IRIS): список значений и штатная цель — из прошивки модели
 function tgtCtl(){return last&&last.latest&&last.latest.fan_ctl}
 function renderTgt(){const fc=tgtCtl();if(!fc)return;const a=document.activeElement,fr=a&&a.dataset.r,ft=a&&a.dataset.t;
  const vals=[...fc.opts,0].sort((x,y)=>(x||fc.auto)-(y||fc.auto));
- const row=r=>{const cur=fc[r]||0;return `<div class="tgt-row"><span class="tgt-lbl">${T(r==='lo'?'tgtLo':'tgtHi')}</span>`+
+ const row=r=>{const cur=fc[r]||0;return `<div class="tgt-row"><span class="tgt-lbl">${T(r==='lo'?'tgtLo':r==='mid'?'tgtMid':'tgtHi')}</span>`+
   vals.map(v=>`<button class="btn tgt-chip${v===cur?' on':''}" data-r="${r}" data-t="${v}" onclick="pickTgt('${r}',${v})">${v||fc.auto}${v===0?`<small>${T('tgtAuto')}</small>`:''}</button>`).join('')+'</div>'};
- $('tgtList').innerHTML=row('lo')+row('hi')+`<div class="tgt-row"><button class="btn wn-row${fc.boot?' on':''}" data-r="boot" data-t="0" onclick="pickBoot()"><b>${T(fc.boot?'wnOn':'wnOff')}</b><span>${T('tgtBoot')}</span></button></div>`;
+ $('tgtList').innerHTML=row('lo')+row('mid')+row('hi')+`<div class="tgt-row"><button class="btn wn-row${fc.boot?' on':''}" data-r="boot" data-t="0" onclick="pickBoot()"><b>${T(fc.boot?'wnOn':'wnOff')}</b><span>${T('tgtBoot')}</span></button></div>`;
  $('tgtReset').textContent=T(fc.boot?'tgtKeep':'tgtReset');
  if(fr!=null){const b=$('tgtList').querySelector(`[data-r="${fr}"][data-t="${ft}"]`)||$('tgtList').querySelector(`[data-r="${fr}"]`);b&&b.focus()}}
 // список раскрывается от кнопки, стрелка указывает на нее (как «Предупреждения»)
-function openTgt(){if(!tgtCtl())return;$('tgtErr').textContent='';renderTgt();const r=$('tgtBtn').getBoundingClientRect(),b=document.querySelector('#tgt .wn-box'),right=Math.max(8,innerWidth-r.right-12);
- b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`);
+function posTgt(){const r=$('tgtBtn').getBoundingClientRect(),b=document.querySelector('#tgt .wn-box'),right=Math.max(8,innerWidth-r.right-12);
+ b.style.top=(r.bottom+12)+'px';b.style.right=right+'px';const cx=innerWidth-right-(r.left+r.width/2)-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',`calc(100% - ${cx+8}px)`)}
+function openTgt(){if(!tgtCtl())return;$('tgtErr').textContent='';renderTgt();posTgt();requestAnimationFrame(posTgt);
  popOpened();$('tgt').classList.add('open');const fc=tgtCtl();popFocus(()=>$('tgtList').querySelector(`[data-r="${fc.use}"].on`)||$('tgtList').querySelector('.btn'))}
 function closeTgt(){$('tgt').classList.remove('open');$('tgtBtn').focus()}
-function pickTgt(r,v){const fc=tgtCtl();if(!fc)return;const lo=r==='lo'?v:(fc.lo||0),hi=r==='hi'?v:(fc.hi||0);let res='';
- try{res=Android.setFanTargets(lo,hi)}catch(e){res=String(e)}
+function pickTgt(r,v){const fc=tgtCtl();if(!fc)return;const lo=r==='lo'?v:(fc.lo||0),mid=r==='mid'?v:(fc.mid||0),hi=r==='hi'?v:(fc.hi||0);let res='';
+ try{res=Android.setFanTargets(lo,mid,hi)}catch(e){res=String(e)}
  if(res!=='ok'){$('tgtErr').textContent=T('tgtFail')+' '+res;return}$('tgtErr').textContent='';
- fc.lo=lo;fc.hi=hi;const w=fc[fc.use];if(w>0)fc.custom=w;else delete fc.custom;updTgtBtn(fc);renderTgt()}
+ fc.lo=lo;fc.mid=mid;fc.hi=hi;const w=fc[fc.use];if(w>0)fc.custom=w;else delete fc.custom;updTgtBtn(fc);renderTgt()}
 function pickBoot(){const fc=tgtCtl();if(!fc)return;fc.boot=!fc.boot;try{Android.setFanBoot(fc.boot)}catch(e){}renderTgt()}
 function updTgtBtn(fc){const b=$('tgtBtn');if(!IS_APP||!fc){b.style.display='none';return}b.style.display='';
- const lo=fc.lo||0,hi=fc.hi||0,u=v=>v?`${v}&nbsp;°C`:T('tgtAuto');
- b.innerHTML=T('tgtBtn',!lo&&!hi?'':lo===hi?u(lo):lo&&hi?`${lo} / ${hi}&nbsp;°C`:`${u(lo)} / ${u(hi)}`);b.classList.toggle('on',!!(lo||hi));
- if($('tgt').classList.contains('open'))renderTgt()}
+ const lo=fc.lo||0,mid=fc.mid||0,hi=fc.hi||0,d=v=>v||'—';
+ // в кнопке не пишем «дефолт» (3 раза не влезает в плитку): незаданная ступень — «—», подписи в окне выбора
+ b.innerHTML=T('tgtBtn',!lo&&!mid&&!hi?'':lo===mid&&mid===hi?`${lo}&nbsp;°C`:`${d(lo)} / ${d(mid)} / ${d(hi)}&nbsp;°C`);b.classList.toggle('on',!!(lo||mid||hi));
+ if($('tgt').classList.contains('open')){renderTgt();posTgt()}}
 // Окно открыли кнопкой OK — то же нажатие (на новых WebView клик приходит при отпускании) не должно
 // сработать на кнопке внутри окна: 0,5 с после открытия клики внутри окон игнорируем
 let popUntil=0;function popOpened(){popUntil=Date.now()+500;popCheck()}
 // Самопроверка: окно открыли, но его не видно (за краем экрана или нулевого размера) — показываем строку
 // с версией WebView, чтобы владелец мог прислать фото (на N3 нет adb). Если все в порядке, ничего не выводится.
-function popCheck(){setTimeout(()=>{const o=['warn','tgt','donate'].map($).find(x=>x.classList.contains('open'));if(!o)return;
+function popCheck(){setTimeout(()=>{const o=['warn','tgt','donate','upd'].map($).find(x=>x.classList.contains('open'));if(!o)return;
  const b=o.querySelector('.wn-box,.dn-box').getBoundingClientRect(),c=o.getBoundingClientRect();
  if(b.width>0&&b.height>0&&b.right>0&&b.bottom>0&&b.left<innerWidth&&b.top<innerHeight){$('popDiag').innerHTML='';return}
  const v=(navigator.userAgent.match(/Chrome\/([\d.]+)/)||[])[1]||'?',sup=window.CSS&&CSS.supports?CSS.supports('inset','0'):'?',r=x=>`${x.left|0},${x.top|0} ${x.width|0}×${x.height|0}`;
  $('popDiag').innerHTML=`<div class="alert">${T('popDiag')} WebView ${esc(v)} · inset ${sup} · ${esc(o.id)} ${r(b)} / ${r(c)} · ${innerWidth}×${innerHeight}</div>`},400)}
-document.addEventListener('click',e=>{if(Date.now()<popUntil&&e.target.closest&&e.target.closest('#warn .wn-box,#tgt .wn-box,#donate .dn-box')){e.preventDefault();e.stopPropagation()}},true);
+document.addEventListener('click',e=>{if(Date.now()<popUntil&&e.target.closest&&e.target.closest('#warn .wn-box,#tgt .wn-box,#donate .dn-box,#upd .wn-box')){e.preventDefault();e.stopPropagation()}},true);
 // фокус в только что открытое окно; если WebView еще не успел показать его — повторяем в следующем кадре
 function popFocus(f){const b=f();b&&b.focus();if(!b||document.activeElement!==b)requestAnimationFrame(()=>{const c=f();c&&c.focus()})}
 if(!IS_APP)$('dnUrl').innerHTML='<a href="https://boosty.to/jmgotemp/donate" target="_blank" rel="noopener">boosty.to/jmgotemp</a>';
@@ -389,8 +419,8 @@ function drawThermal(points,lim){
   line(p=>p.dmd,'#f2bd55',1.8);
   const fh=parseInt(x.font)||14*dpr,boxes=[];
   lbl.sort((a,b)=>a.y-b.y).forEach(o=>{const w=x.measureText(o.label).width+8*dpr,x0=W-R-w;
-    const fits=t=>t>=T0-2*dpr&&!boxes.some(b=>t<b+fh+4*dpr&&b<t+fh+4*dpr);
-    let t=o.y-fh-5*dpr;if(!fits(t))t=o.y+3*dpr;boxes.push(t);
+    const bh=fh+4*dpr,fits=t=>t>=0&&t+bh<=H&&!boxes.some(b=>t<b+bh&&b<t+bh);
+    let t=o.y-fh-5*dpr;if(!fits(t)){t=o.y+3*dpr;if(!fits(t))boxes.slice().sort((a,b)=>a-b).forEach(b=>{if(t<b+bh&&b<t+bh)t=b+bh+2*dpr})}boxes.push(t);
     x.fillStyle='rgba(25,28,34,.85)';x.fillRect(x0,t,w,fh+4*dpr);x.fillStyle=o.color;x.textAlign='left';x.fillText(o.label,x0+4*dpr,t+fh)});
   let lg='<span><i class="legend-dot" style="background:#f2bd55"></i>DMD</span>';for(let i=0;i<n;i++)lg+=`<span><i class="legend-dot" style="background:${LCOL[i]}"></i>${T('laserModule',i+1)}</span>`;set('thermalLegend',lg);
 }
@@ -463,8 +493,8 @@ function render(r){
   renderProtection(d);
   drawThermal(r.history||[],lim);drawCombined(r.history||[]);
 }
-const CORN={tr:'↗',br:'↘',bl:'↙',tl:'↖'};
-function updOverlayBtn(){if(!IS_APP)return;try{const on=Android.overlayOn(),can=Android.canOverlay();const b=$('ovBtn');b.textContent=T('ovBtn',on);b.classList.toggle('on',on);$('cornerBtn').textContent=`${T('corner')}: ${CORN[Android.corner()]||'↗'}`;
+const CORN={tr:'↗',br:'↘',bl:'↙',tl:'↖'},CROT={tr:0,br:90,bl:180,tl:270};
+function updOverlayBtn(){if(!IS_APP)return;try{const on=Android.overlayOn(),can=Android.canOverlay();const b=$('ovBtn');b.textContent=T('ovBtn',on);b.classList.toggle('on',on);$('cornerBtn').innerHTML=`${T('corner')}: <span class="ic"><svg class="ico arr" viewBox="0 0 24 24" aria-hidden="true" style="transform:rotate(${CROT[Android.corner()]||0}deg)"><path d="M7 17 17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
  $('ovWarn').innerHTML=can?'':`<div class="alert">${T('ovWarn')}<br><b>adb shell appops set ${esc(typeof Android.pkg==='function'?Android.pkg():'io.github.jmgotemp')} SYSTEM_ALERT_WINDOW allow</b></div>`}catch(e){}}
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&onBack()){e.preventDefault();return}
@@ -473,21 +503,53 @@ document.addEventListener('keydown',e=>{
     let ri=rows.findIndex(r=>r.includes(document.activeElement)),ci=ri<0?0:rows[ri].indexOf(document.activeElement);if(ri<0)ri=0;
     const r0=ri;if(e.key==='ArrowDown')ri=Math.min(rows.length-1,ri+1);else if(e.key==='ArrowUp')ri=Math.max(0,ri-1);
     else ci=e.key==='ArrowRight'?ci+1:ci-1;const r=rows[ri];if(ri!==r0&&rows[r0].length!==r.length)ci=Math.max(0,r.findIndex(b=>b.classList.contains('on')));const b=r[Math.max(0,Math.min(r.length-1,ci))];b&&b.focus();e.preventDefault();return}
-  const dd=['warn','tgt'].map($).find(x=>x.classList.contains('open'));
+  const dd=['warn','tgt','upd'].map($).find(x=>x.classList.contains('open'));
   if(dd&&e.key.startsWith('Arrow')){const bs=[...dd.querySelectorAll('.btn')];let i=bs.indexOf(document.activeElement);const n=bs.length;
     i=i<0?0:e.key==='ArrowDown'?Math.min(n-1,i+1):e.key==='ArrowUp'?Math.max(0,i-1):e.key==='ArrowRight'?Math.min(n-1,i+1):Math.max(0,i-1);bs[i].focus();bs[i].scrollIntoView({block:'nearest'});e.preventDefault();return}
-  const tb=$('tgtBtn'),inHead=document.activeElement&&document.activeElement.closest('.hdr-right');
+  const tb=$('tgtBtn'),inHead=document.activeElement&&document.activeElement.closest('.head');
   if(e.key==='ArrowDown'&&inHead&&tb.offsetParent){tb.focus();e.preventDefault();return}
   if(e.key==='ArrowUp'&&document.activeElement===tb){(IS_APP?$('ovBtn'):$('langBtn')).focus();e.preventDefault();return}
   if(e.key==='ArrowDown'){window.scrollBy({top:260,behavior:'smooth'});e.preventDefault()}
   else if(e.key==='ArrowUp'){window.scrollBy({top:-260,behavior:'smooth'});e.preventDefault()}
-  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent&&!b.closest('#warn,#tgt'));let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
+  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const bs=[...document.querySelectorAll('.btn')].filter(b=>b.offsetParent&&!b.closest('#warn,#tgt,#upd,#donate'));let i=bs.indexOf(document.activeElement);i=i<0?0:(i+(e.key==='ArrowRight'?1:-1)+bs.length)%bs.length;bs[i].focus();e.preventDefault()}
 });
+// Обновления (с 1.6): APK — Android.updState()/updCheck()/updInstall(), браузер — /upd на локальном сервере.
+// Проверка — номер последнего релиза на GitHub; никаких данных не отправляется.
+let UPD={},updSig='',updN=0;
+function updFetch(force){if(IS_APP){try{UPD=JSON.parse(Android.updState())}catch(e){}renderUpd();return}
+ if(!force&&!$('upd').classList.contains('open')&&(updN++%15))return;fetch('/upd',{cache:'no-store'}).then(r=>r.json()).then(j=>{UPD=j;renderUpd()}).catch(()=>{})}
+function updWhen(ts){if(!ts)return T('upNever');const d=new Date(ts*1000),n=new Date(),hm=d.toTimeString().slice(0,5);
+ return T('upChecked',d.toDateString()===n.toDateString()?T('upToday')+' '+hm:d.toLocaleDateString(LANG==='ru'?'ru-RU':'en-GB',{day:'numeric',month:'short'})+' '+hm)}
+function renderUpd(){const u=UPD||{},ph=u.phase||'idle',cur=u.cur||'';$('hdrVer').textContent=cur;
+ $('updBtn').classList.toggle('new',!!u.newer);if(!$('upd').classList.contains('open'))return;
+ $('upCur').innerHTML=T('upCur',esc(cur));let cls='',st='';
+ if(ph==='checking')st=T('upChecking');else if(ph==='download')st=T('upDl',Math.max(0,u.progress|0)),cls='new';else if(ph==='install')st=T('upInst'),cls='new';
+ else if(ph==='error'){cls='err';st=esc(T('upErr_'+u.err)||u.err)}
+ else if(u.newer){cls='new';st=T('upNew',esc(u.latest))}else if(u.latest){cls='ok';st=T('upOk')+`<small>${updWhen(u.checked)}</small>`}else st=T('upNever');
+ $('upSt').className='up-st '+cls;$('upSt').innerHTML=st;renderNotes(u);
+ const busy=ph==='checking'||ph==='download'||ph==='install',sig=[busy,u.newer,u.can_install,LANG].join();if(sig===updSig)return;updSig=sig;
+ const f=document.activeElement&&document.activeElement.id;let h='';
+ if(u.newer&&!busy)h+=u.can_install?`<button class="btn go" id="upGo" onclick="updInstall()">${T('upInstall')}</button>`:`<a class="btn go" id="upGo" href="${esc(u.page)}" target="_blank" rel="noopener">${T('upOpen')}</a>`;
+ if(!busy)h+=`<button class="btn" id="upChk" onclick="updCheck()">${T('upCheck')}</button>`;
+ const inPop=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#upd');$('upBtns').innerHTML=h;
+ if(!inPop||!document.activeElement.offsetParent){const fb=(f&&$(f))||$('upGo')||$('upChk');fb&&fb.focus()}}
+// «Что нового»: из описания релиза на GitHub (английские пункты, пустая строка, русские); до 6 пунктов, язык по интерфейсу
+function noteItems(body){const part=String(body||'').split(/\n-{3,}\s*(\n|$)/)[0],gs=part.split(/\n\s*\n/).map(g=>g.split('\n').map(x=>x.trim()).filter(x=>/^[-*•]\s+/.test(x)).map(x=>x.replace(/^[-*•]\s+/,''))).filter(g=>g.length);
+ if(!gs.length)return [];return gs.length>1&&LANG==='ru'?gs[1]:gs[0]}
+function renderNotes(u){const el=$('upNew'),it=u.newer?noteItems(u.notes):[];if(!it.length){el.style.display='none';el.innerHTML='';return}
+ const sh=it.slice(0,6);el.innerHTML=`<h4>${esc(T('upNewT',u.latest))}</h4><ul>${sh.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`+(it.length>6?`<div class="more">${esc(T('upMore',it.length-6))}</div>`:'');el.style.display=''}
+function updCheck(){if(IS_APP){try{Android.updCheck()}catch(e){}}else fetch('/upd?check=1',{cache:'no-store'}).catch(()=>{});UPD.phase='checking';UPD.err='';renderUpd();setTimeout(()=>updFetch(true),1500)}
+function updInstall(){let r='';try{r=Android.updInstall()}catch(e){r='inst'}if(r!=='ok'){UPD.phase='error';UPD.err=r==='busy'?'':r}updFetch(true)}
+// окно раскрывается вниз от кнопки (она слева в шапке), стрелка указывает на нее
+function openUpd(){updSig='';const r=$('updBtn').getBoundingClientRect(),b=$('updBox'),left=Math.max(8,r.left-24);
+ b.style.top=(r.bottom+12)+'px';b.style.left=left+'px';const cx=r.left+r.width/2-left-8;b.style.setProperty('--cx',cx+'px');b.style.setProperty('--ox',(cx+8)+'px');
+ popOpened();$('updBtn').classList.add('on');$('upd').classList.add('open');updFetch(true);renderUpd();popFocus(()=>$('upGo')||$('upChk'))}
+function closeUpd(){$('upd').classList.remove('open');$('updBtn').classList.remove('on');$('updBtn').focus()}
 async function tick(){
   try{
     if(IS_APP)last=JSON.parse(Android.api());
     else last=await (await fetch('/api',{cache:'no-store'})).json();
-    render(last);updOverlayBtn();
+    render(last);updOverlayBtn();updFetch();
   }catch(e){$('status').className='status off';$('status').innerHTML='<i class="dot"></i>'+T('error')+esc(e)}
 }
 applyStatic();updOverlayBtn();

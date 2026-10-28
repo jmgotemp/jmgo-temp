@@ -32,11 +32,11 @@ public class MainActivity extends Activity {
         // фоновые предупреждения о перегреве: работают, пока приложение в памяти после выхода с экрана
         // своя цель вентиляторов тоже держит службу (ставит цель по яркости и после белого экрана)
         if (prefs().getBoolean("watch", true) || monitor.hasFanTarget()) startForegroundService(new Intent(this, WatchService.class));
-        handleIntent(getIntent());
+        if (!Updater.get(this).onStatus(this, getIntent())) handleIntent(getIntent());
     }
 
     @Override
-    protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
+    protected void onNewIntent(Intent i) { super.onNewIntent(i); if (!Updater.get(this).onStatus(this, i)) handleIntent(i); }
 
     /** am start -n <пакет>/io.github.jmgotemp.MainActivity --es overlay on|off  — включить/выключить компактный режим без пульта.
      *  Пакет с 1.3: com.jmgo.jmgotemp (hippo не закрывает приложения com.jmgo.*), до 1.3: io.github.jmgotemp. */
@@ -62,7 +62,8 @@ public class MainActivity extends Activity {
     @Override protected void onStart() { super.onStart(); monitor.acquire(); }
     @Override protected void onStop() { monitor.release(); super.onStop(); }
     // пока открыт полный экран, компактный режим не нужен — прячем его, чтобы не закрывал заголовок
-    @Override protected void onResume() { super.onResume(); OverlayService.setHidden(true); WatchService.appVisible = true; }
+    // проверка обновлений: не чаще раза в сутки и только когда открыт экран приложения
+    @Override protected void onResume() { super.onResume(); OverlayService.setHidden(true); WatchService.appVisible = true; Updater.get(this).autoCheck(); }
     @Override protected void onPause() { WatchService.appVisible = false; OverlayService.setHidden(false); super.onPause(); }
 
     @Override
@@ -86,6 +87,11 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public String pkg() { return getPackageName(); }
+
+        /** Обновления: состояние {cur, latest, newer, checked, phase, err, progress}, проверка и установка */
+        @JavascriptInterface public String updState() { return Updater.get(MainActivity.this).stateJson(); }
+        @JavascriptInterface public void updCheck() { Updater.get(MainActivity.this).check(); }
+        @JavascriptInterface public String updInstall() { return Updater.get(MainActivity.this).install(); }
 
         @JavascriptInterface public String getLang() { return prefs().getString("lang", ""); }
 
@@ -122,9 +128,9 @@ public class MainActivity extends Activity {
             if (any || monitor.hasFanTarget()) startForegroundService(s); else stopService(s);
         }
 
-        /** Цели температуры для вентиляторов: lo — яркость 1–6, hi — 7–10; t > 0 — своя, 0 — как в прошивке. */
-        @JavascriptInterface public String setFanTargets(int lo, int hi) {
-            String r = monitor.setFanTargets(lo, hi);
+        /** Цели температуры для вентиляторов: lo — яркость 1–3, mid — 4–6, hi — 7–10; t > 0 — своя, 0 — как в прошивке. */
+        @JavascriptInterface public String setFanTargets(int lo, int mid, int hi) {
+            String r = monitor.setFanTargets(lo, mid, hi);
             Intent s = new Intent(MainActivity.this, WatchService.class);
             if (monitor.hasFanTarget()) startForegroundService(s);
             else if (!prefs().getBoolean("watch", true)) stopService(s);

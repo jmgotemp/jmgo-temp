@@ -16,7 +16,9 @@ Temperature monitor for JMGO laser projectors (N5 / N5S / IRIS / N3 series).
 ## Two ways to run
 - **APK** — install on the projector, open «JMGO Temp». Full-screen dashboard + compact overlay.
   Since 1.5 the app can optionally change the laser temperature target the fans hold
-  (resets on reboot unless «Keep after reboot» is on). Everything else is read-only.
+  (resets on reboot unless «Keep after reboot» is on). Since 1.6 the app also checks GitHub for a new version
+  (once a day when the screen opens, or by the button) and can download and install it on request;
+  it sends nothing about you or the projector. Everything else is read-only.
 - **Browser version** — `jmgo_dash.py` (Python 3, no extra packages) on a computer in the same network,
   over wireless ADB: `python3 jmgo_dash.py <projector-IP>:<port>` → http://localhost:8777.
   Windows: `jmgo_dash_win.bat`. Read-only.
@@ -62,7 +64,9 @@ choose, sets the fan temperature target, which the firmware resets on reboot. Pr
 
 - **APK** — ставится на проектор. С версии 1.5 может по желанию менять температуру лазеров,
   которую держат вентиляторы (сбрасывается при перезагрузке, если не включено «Сохранять после
-  перезагрузки»). Остальное только читается.
+  перезагрузки»). С версии 1.6 приложение раз в сутки при открытии (или по кнопке) спрашивает у GitHub, не вышла
+  ли новая версия, и по вашей кнопке скачивает и ставит ее; ничего о вас и проекторе не отправляет.
+  Остальное только читается.
 - **Браузерная версия** — `jmgo_dash.py` на компьютере в той же сети, по беспроводному ADB:
   `python3 jmgo_dash.py IP:порт`, на Windows — `jmgo_dash_win.bat`. Только чтение.
 

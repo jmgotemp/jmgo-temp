@@ -3,13 +3,16 @@
      Классы остаются в io.github.jmgotemp. До 1.3 пакет был io.github.jmgotemp. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jmgo.jmgotemp"
-    android:versionCode="10"
-    android:versionName="1.5.1">
+    android:versionCode="12"
+    android:versionName="1.6">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- только для «Применять после включения проектора» (по умолчанию выключено) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- с 1.6: проверка обновлений на GitHub (номер версии) и скачивание APK по кнопке; данные не отправляются -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -22,6 +25,7 @@
 
         <activity
             android:name="io.github.jmgotemp.MainActivity"
+            android:launchMode="singleTop"
             android:exported="true"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation">
@@ -32,6 +36,9 @@
             </intent-filter>
         </activity>
 
+        <!-- с 1.6: отдает скачанный APK обновления установщику (только чтение, только этот файл) -->
+        <provider android:name="io.github.jmgotemp.ApkProvider" android:authorities="com.jmgo.jmgotemp.apk"
+            android:exported="false" android:grantUriPermissions="true" />
         <service android:name="io.github.jmgotemp.OverlayService" android:exported="false" />
         <service android:name="io.github.jmgotemp.WatchService" android:exported="false" />
         <receiver android:name="io.github.jmgotemp.BootReceiver" android:exported="true">

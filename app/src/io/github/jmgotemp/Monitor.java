@@ -54,7 +54,7 @@ public final class Monitor {
      *  На китайской N3 Ultra запись проверена владельцем. */
     private static final String[] FAN_CTL_MODELS = {"K981", "K983", "KD11", "KD21", "K930", "K931", "K940", "K941"};
     /** С какой ступени меню яркости действует вторая цель («яркая»): 1–6 — первая, 7–10 и фиксированные яркие режимы — вторая. */
-    static final int FAN_HI_LEVEL = 7;
+    static final int FAN_MID_LEVEL = 4, FAN_HI_LEVEL = 7;
     static final int MODE_WHITE = 22;
 
     private static Monitor instance;
@@ -76,7 +76,7 @@ public final class Monitor {
     private Thread thread;
     private int users, fastUsers;
     private long lastHistory;
-    private final long sessionStart = System.currentTimeMillis() / 1000;
+    private long sessionStart = System.currentTimeMillis() / 1000;
     private Double maxDmd, maxLaser; private Integer maxCpu;
     private long[] prevCpu;
     private Long throttleSince, throttleFirst;
@@ -92,7 +92,7 @@ public final class Monitor {
     /** Цели, выбранные в приложении: для яркости 1–6 и 7–10; null — как в прошивке.
      *  Хранятся в настройках вместе с номером загрузки: после перезагрузки сбрасываются,
      *  если не включено «Применять после включения проектора» (fanBoot). */
-    private volatile Integer fanLo, fanHi;
+    private volatile Integer fanLo, fanMid, fanHi;
     private volatile boolean fanBoot, fanLoaded;
     /** Что приложение записало последним (−1 — вернуло авто); null — еще ничего. */
     private Integer fanApplied;
@@ -150,7 +150,13 @@ public final class Monitor {
             if (asleep()) {
                 // проснемся — продолжим; выбранную цель Monitor поставит снова, если прошивка ее сбросила
                 if (!sleeping) { sleeping = true; android.util.Log.i("JmgoTemp", "projector asleep (power.state=" + prop("jmgo.system.power.state") + "): polling paused"); }
-                synchronized (this) { fanApplied = null; }
+                // график за час после сна начинается заново, как в браузерной версии
+                synchronized (this) {
+                    fanApplied = null; history.clear(); lastHistory = 0;
+                    // «Максимум за сеанс» тоже начинается заново после выключения с пульта
+                    maxDmd = null; maxLaser = null; maxCpu = null; throttleFirst = null; throttleSince = null;
+                    sessionStart = System.currentTimeMillis() / 1000;
+                }
                 try { synchronized (this) { wait(5000); } } catch (InterruptedException e) { return; }
                 continue;
             }
@@ -205,11 +211,13 @@ public final class Monitor {
             JSONObject fc = l.optJSONObject("fan_ctl");
             if (fc != null) {
                 JSONObject f = new JSONObject(fc.toString());
-                Integer lo = fanLo, hi = fanHi;
+                Integer lo = fanLo, mid = fanMid, hi = fanHi;
                 f.put("lo", lo == null ? 0 : lo);
+                f.put("mid", mid == null ? 0 : mid);
                 f.put("hi", hi == null ? 0 : hi);
                 f.put("boot", fanBoot);
-                Integer want = "hi".equals(f.optString("use")) ? hi : lo;
+                String use = f.optString("use");
+                Integer want = "hi".equals(use) ? hi : "mid".equals(use) ? mid : lo;
                 if (want != null) f.put("custom", want); else f.remove("custom");
                 l = new JSONObject(l.toString());
                 l.put("fan_ctl", f);
@@ -316,7 +324,7 @@ public final class Monitor {
         return false;
     }
 
-    public boolean hasFanTarget() { loadFanPrefs(); return fanLo != null || fanHi != null; }
+    public boolean hasFanTarget() { loadFanPrefs(); return fanLo != null || fanMid != null || fanHi != null; }
 
     private android.content.SharedPreferences prefs() { return ctx.getSharedPreferences("overlay", Context.MODE_PRIVATE); }
 
@@ -334,7 +342,7 @@ public final class Monitor {
     /** Есть ли сохраненная цель, которую надо держать после включения (для автозапуска). */
     static boolean bootTargetSaved(Context c) {
         android.content.SharedPreferences p = c.getSharedPreferences("overlay", Context.MODE_PRIVATE);
-        return p.getBoolean("fan_boot", false) && (p.getInt("fan_lo", 0) > 0 || p.getInt("fan_hi", 0) > 0);
+        return p.getBoolean("fan_boot", false) && (p.getInt("fan_lo", 0) > 0 || p.getInt("fan_mid", 0) > 0 || p.getInt("fan_hi", 0) > 0);
     }
 
     /** Выбор из настроек: та же загрузка — восстанавливаем (приложение перезапускали); новая — только с «Применять после включения». */
@@ -343,14 +351,20 @@ public final class Monitor {
         fanLoaded = true;
         android.content.SharedPreferences p = prefs();
         fanBoot = p.getBoolean("fan_boot", false);
-        int lo = p.getInt("fan_lo", 0), hi = p.getInt("fan_hi", 0);
-        if (lo <= 0 && hi <= 0) return;
+        int lo = p.getInt("fan_lo", 0), mid = p.getInt("fan_mid", 0), hi = p.getInt("fan_hi", 0);
+        // до 1.7 было две ступени: fan_lo — яркость 1–6. Теперь 1–3 и 4–6: прежний выбор остается на обеих
+        if (!p.getBoolean("fan_v3", false)) {
+            mid = lo;
+            p.edit().putInt("fan_mid", mid).putBoolean("fan_v3", true).apply();
+        }
+        if (lo <= 0 && mid <= 0 && hi <= 0) return;
         if (fanBoot || sameBoot(bootId(), p.getInt("fan_bootid", Integer.MIN_VALUE))) {
             fanLo = lo > 0 ? lo : null;
+            fanMid = mid > 0 ? mid : null;
             fanHi = hi > 0 ? hi : null;
             p.edit().putInt("fan_bootid", bootId()).apply();
         } else {
-            p.edit().remove("fan_lo").remove("fan_hi").apply();
+            p.edit().remove("fan_lo").remove("fan_mid").remove("fan_hi").apply();
         }
     }
 
@@ -368,16 +382,18 @@ public final class Monitor {
         return false;
     }
 
-    /** lo — для яркости 1–6, hi — для 7–10; t > 0 — своя (только из списка модели), ≤ 0 — как в прошивке. Возвращает "ok" или текст ошибки. */
-    public String setFanTargets(int lo, int hi) {
+    /** lo — для яркости 1–3, mid — 4–6, hi — 7–10; t > 0 — своя (только из списка модели), ≤ 0 — как в прошивке. Возвращает "ok" или текст ошибки. */
+    public String setFanTargets(int lo, int mid, int hi) {
         try {
             limits();
             loadFanPrefs();
             if (!fanCtlModel(model()) || fanAuto <= 0) return "unsupported";
-            if (!allowed(lo) || !allowed(hi)) return "bad_value";
+            if (!allowed(lo) || !allowed(mid) || !allowed(hi)) return "bad_value";
             fanLo = lo > 0 ? lo : null;
+            fanMid = mid > 0 ? mid : null;
             fanHi = hi > 0 ? hi : null;
-            prefs().edit().putInt("fan_lo", Math.max(0, lo)).putInt("fan_hi", Math.max(0, hi)).putInt("fan_bootid", bootId()).apply();
+            prefs().edit().putInt("fan_lo", Math.max(0, lo)).putInt("fan_mid", Math.max(0, mid)).putInt("fan_hi", Math.max(0, hi))
+                    .putBoolean("fan_v3", true).putInt("fan_bootid", bootId()).apply();
             applyFanTarget(latest, null, true);
             synchronized (this) { notifyAll(); }
             return "ok";
@@ -392,12 +408,18 @@ public final class Monitor {
 
     public boolean fanBoot() { loadFanPrefs(); return fanBoot; }
 
-    /** Какая цель нужна сейчас: фиксированные яркие режимы, ступени 7–10 и неизвестная яркость — «яркая». */
-    private static boolean useHi(JSONObject s) {
+    /** Какая ступень нужна сейчас: 0 — яркость 1–3, 1 — 4–6, 2 — 7–10. Фиксированные яркие режимы и неизвестная яркость — «яркая». */
+    private static int tier(JSONObject s) {
         int mode = s.optInt("brightness_mode", -1);
-        if (mode == 15 || mode == 16 || mode == 22 || mode == 23) return true;
-        return !s.has("brightness_menu") || s.optInt("brightness_menu", 10) >= FAN_HI_LEVEL;
+        if (mode == 15 || mode == 16 || mode == 22 || mode == 23) return 2;
+        if (!s.has("brightness_menu")) return 2;
+        int lvl = s.optInt("brightness_menu", 10);
+        return lvl >= FAN_HI_LEVEL ? 2 : lvl >= FAN_MID_LEVEL ? 1 : 0;
     }
+
+    private Integer fanFor(int tier) { return tier == 2 ? fanHi : tier == 1 ? fanMid : fanLo; }
+
+    private static final String[] TIER_NAMES = {"lo", "mid", "hi"};
 
     /** Ставит нужную цель. Пишем, только когда нужная цель изменилась (ступень яркости, выбор в меню)
      *  или прошивка сбросила ее в −1 (после белого экрана). На белом экране приоритет у прошивки. */
@@ -406,9 +428,9 @@ public final class Monitor {
         try {
             if (fcNow == null) fcNow = getInt(IDX_FAN_TARGET);
             if (fcNow == null) return null;
-            Integer want = useHi(s) ? fanHi : fanLo;
+            Integer want = fanFor(tier(s));
             int w = want == null ? -1 : want;
-            boolean changed = fanApplied == null ? (want != null || fcNow > 0 && allowed(fcNow) && (fanLo != null || fanHi != null))
+            boolean changed = fanApplied == null ? (want != null || fcNow > 0 && allowed(fcNow) && (fanLo != null || fanMid != null || fanHi != null))
                     : fanApplied != w;
             if (want != null && (changed || fcNow == -1) && fcNow != w) { setInt(IDX_FAN_TARGET, w); fcNow = w; }
             // вернуть авто: только если сейчас стоит наша цель (не трогаем чужую и цель белого экрана)
@@ -528,7 +550,10 @@ public final class Monitor {
                         int below = (b - 2) / 2 * 2, above = b / 2 * 2 + 2;   // четное не ближе 2 °C ниже авто; ближайшее четное выше
                         // N5S Ultra Max (KD11CN, авто 48): по просьбе владельцев 5 значений ниже и 2 выше — 38…46 · 50 52
                         boolean um = model().toUpperCase(Locale.ROOT).startsWith("KD11CN");
-                        int nBelow = um ? 5 : 4, nAbove = um ? 2 : 3;
+                        // N3 (K930/K931/K940/K941): по просьбе владельца на низкой яркости — до 34 °C (шесть значений ниже авто)
+                        String mu = model().toUpperCase(Locale.ROOT);
+                        boolean n3 = mu.startsWith("K930") || mu.startsWith("K931") || mu.startsWith("K940") || mu.startsWith("K941");
+                        int nBelow = um ? 5 : n3 ? 6 : 4, nAbove = um ? 2 : 3;
                         List<Integer> o = new ArrayList<>();
                         for (int v = Math.max(34, below - 2 * (nBelow - 1)); v <= below; v += 2) o.add(v);
                         for (int v = above; v <= Math.min(above + 2 * (nAbove - 1), cap); v += 2) o.add(v);
@@ -802,22 +827,25 @@ public final class Monitor {
         }
         if (!s.has("brightness_menu") && curLevel != null) { s.put("brightness_menu", curLevel); s.put("brightness_exact", false); }
         if (fc != null) {
-            // две цели: для яркости 1–6 и 7–10 (ступень меню; с AL 2.0 меню стоит на 10 — «яркая»)
+            // три цели: для яркости 1–3, 4–6 и 7–10 (ступень меню; с AL 2.0 меню стоит на 10 — «яркая»)
             loadFanPrefs();
-            Integer lo2 = nearestOpt(fanLo), hi2 = nearestOpt(fanHi);
-            if (!java.util.Objects.equals(lo2, fanLo) || !java.util.Objects.equals(hi2, fanHi)) {
-                fanLo = lo2; fanHi = hi2;
-                prefs().edit().putInt("fan_lo", lo2 == null ? 0 : lo2).putInt("fan_hi", hi2 == null ? 0 : hi2).apply();
+            Integer lo2 = nearestOpt(fanLo), mid2 = nearestOpt(fanMid), hi2 = nearestOpt(fanHi);
+            if (!java.util.Objects.equals(lo2, fanLo) || !java.util.Objects.equals(mid2, fanMid) || !java.util.Objects.equals(hi2, fanHi)) {
+                fanLo = lo2; fanMid = mid2; fanHi = hi2;
+                prefs().edit().putInt("fan_lo", lo2 == null ? 0 : lo2).putInt("fan_mid", mid2 == null ? 0 : mid2)
+                        .putInt("fan_hi", hi2 == null ? 0 : hi2).apply();
             }
-            if (fanLo != null || fanHi != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
-            boolean hi = useHi(s);
-            Integer want = hi ? fanHi : fanLo;
+            if (fanLo != null || fanMid != null || fanHi != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
+            int tr = tier(s);
+            Integer want = fanFor(tr);
             fc.put("now", fcNow == null ? -1 : fcNow);
             fc.put("lo", fanLo == null ? 0 : fanLo);
+            fc.put("mid", fanMid == null ? 0 : fanMid);
             fc.put("hi", fanHi == null ? 0 : fanHi);
-            fc.put("use", hi ? "hi" : "lo");
+            fc.put("use", TIER_NAMES[tr]);
             fc.put("boot", fanBoot);
             fc.put("level", FAN_HI_LEVEL);
+            fc.put("level_mid", FAN_MID_LEVEL);
             if (want != null) fc.put("custom", want);
             s.put("fan_ctl", fc);
         }
