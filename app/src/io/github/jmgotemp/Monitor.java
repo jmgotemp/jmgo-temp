@@ -54,7 +54,7 @@ public final class Monitor {
      *  На китайской N3 Ultra запись проверена владельцем. */
     private static final String[] FAN_CTL_MODELS = {"K981", "K983", "KD11", "KD21", "K930", "K931", "K940", "K941"};
     /** С какой ступени меню яркости действует вторая цель («яркая»): 1–6 — первая, 7–10 и фиксированные яркие режимы — вторая. */
-    static final int FAN_MID_LEVEL = 4, FAN_HI_LEVEL = 7;
+    static final int FAN_MID_LEVEL = 4, FAN_HI_LEVEL = 7, FAN_TOP_LEVEL = 9;
     static final int MODE_WHITE = 22;
 
     private static Monitor instance;
@@ -92,7 +92,8 @@ public final class Monitor {
     /** Цели, выбранные в приложении: для яркости 1–6 и 7–10; null — как в прошивке.
      *  Хранятся в настройках вместе с номером загрузки: после перезагрузки сбрасываются,
      *  если не включено «Применять после включения проектора» (fanBoot). */
-    private volatile Integer fanLo, fanMid, fanHi;
+    private volatile Integer fanLo, fanMid, fanHi, fanTop;
+    private volatile int fanTiers = 3;
     private volatile boolean fanBoot, fanLoaded;
     /** Что приложение записало последним (−1 — вернуло авто); null — еще ничего. */
     private Integer fanApplied;
@@ -105,6 +106,10 @@ public final class Monitor {
     /** Штатная цель модели и разрешенные значения (из FAN_PID_CONTROL_CONFIG). */
     private int fanAuto = -1;
     private int[] fanOpts = new int[0];
+    /** Свободный выбор с 1.6.1: любое целое от fanMin до fanMax (границы прежнего списка модели). */
+    private int fanMin = -1, fanMax = -1;
+    /** «Не достигается»: своя цель, вентиляторы ≥ 95 % и лазеры выше цели > 1 °C — с этого момента (0 — нет). */
+    private long unreachSince;
 
     private Monitor(Context c) { ctx = c; }
 
@@ -211,13 +216,15 @@ public final class Monitor {
             JSONObject fc = l.optJSONObject("fan_ctl");
             if (fc != null) {
                 JSONObject f = new JSONObject(fc.toString());
-                Integer lo = fanLo, mid = fanMid, hi = fanHi;
+                Integer lo = fanLo, mid = fanMid, hi = fanHi, top = fanTop;
                 f.put("lo", lo == null ? 0 : lo);
                 f.put("mid", mid == null ? 0 : mid);
                 f.put("hi", hi == null ? 0 : hi);
+                f.put("top", top == null ? 0 : top);
                 f.put("boot", fanBoot);
+                f.put("tiers", fanTiers);
                 String use = f.optString("use");
-                Integer want = "hi".equals(use) ? hi : "mid".equals(use) ? mid : lo;
+                Integer want = "top".equals(use) ? top : "hi".equals(use) ? hi : "mid".equals(use) ? mid : lo;
                 if (want != null) f.put("custom", want); else f.remove("custom");
                 l = new JSONObject(l.toString());
                 l.put("fan_ctl", f);
@@ -324,7 +331,7 @@ public final class Monitor {
         return false;
     }
 
-    public boolean hasFanTarget() { loadFanPrefs(); return fanLo != null || fanMid != null || fanHi != null; }
+    public boolean hasFanTarget() { loadFanPrefs(); return fanLo != null || fanMid != null || fanHi != null || fanTop != null; }
 
     private android.content.SharedPreferences prefs() { return ctx.getSharedPreferences("overlay", Context.MODE_PRIVATE); }
 
@@ -342,7 +349,7 @@ public final class Monitor {
     /** Есть ли сохраненная цель, которую надо держать после включения (для автозапуска). */
     static boolean bootTargetSaved(Context c) {
         android.content.SharedPreferences p = c.getSharedPreferences("overlay", Context.MODE_PRIVATE);
-        return p.getBoolean("fan_boot", false) && (p.getInt("fan_lo", 0) > 0 || p.getInt("fan_mid", 0) > 0 || p.getInt("fan_hi", 0) > 0);
+        return p.getBoolean("fan_boot", false) && (p.getInt("fan_lo", 0) > 0 || p.getInt("fan_mid", 0) > 0 || p.getInt("fan_hi", 0) > 0 || p.getInt("fan_top", 0) > 0);
     }
 
     /** Выбор из настроек: та же загрузка — восстанавливаем (приложение перезапускали); новая — только с «Применять после включения». */
@@ -351,49 +358,55 @@ public final class Monitor {
         fanLoaded = true;
         android.content.SharedPreferences p = prefs();
         fanBoot = p.getBoolean("fan_boot", false);
-        int lo = p.getInt("fan_lo", 0), mid = p.getInt("fan_mid", 0), hi = p.getInt("fan_hi", 0);
+        fanTiers = Math.max(1, Math.min(4, p.getInt("fan_tiers", 3)));
+        int lo = p.getInt("fan_lo", 0), mid = p.getInt("fan_mid", 0), hi = p.getInt("fan_hi", 0), top = p.getInt("fan_top", 0);
         // до 1.7 было две ступени: fan_lo — яркость 1–6. Теперь 1–3 и 4–6: прежний выбор остается на обеих
         if (!p.getBoolean("fan_v3", false)) {
             mid = lo;
             p.edit().putInt("fan_mid", mid).putBoolean("fan_v3", true).apply();
         }
-        if (lo <= 0 && mid <= 0 && hi <= 0) return;
+        // до 1.6.1 яркая ступень была 7–10: ее цель остается и на 9–10
+        if (!p.getBoolean("fan_v4", false)) {
+            top = hi;
+            p.edit().putInt("fan_top", top).putBoolean("fan_v4", true).apply();
+        }
+        if (lo <= 0 && mid <= 0 && hi <= 0 && top <= 0) return;
         if (fanBoot || sameBoot(bootId(), p.getInt("fan_bootid", Integer.MIN_VALUE))) {
             fanLo = lo > 0 ? lo : null;
             fanMid = mid > 0 ? mid : null;
             fanHi = hi > 0 ? hi : null;
+            fanTop = top > 0 ? top : null;
             p.edit().putInt("fan_bootid", bootId()).apply();
         } else {
-            p.edit().remove("fan_lo").remove("fan_mid").remove("fan_hi").apply();
+            p.edit().remove("fan_lo").remove("fan_mid").remove("fan_hi").remove("fan_top").apply();
         }
     }
 
-    /** Значение из старого списка (например, 41 из 1.5), которого нет в текущем, — к ближайшему из списка, при равенстве к холодному. */
+    /** Сохраненное значение вне диапазона модели (например, после смены прошивки) — к ближайшей границе. */
     private Integer nearestOpt(Integer t) {
         if (t == null || allowed(t)) return t;
-        Integer best = null;
-        for (int v : fanOpts) if (best == null || Math.abs(v - t) < Math.abs(best - t)) best = v;
-        return best;
+        if (fanMin <= 0) return null;
+        return Math.max(fanMin, Math.min(fanMax, t));
     }
 
     private boolean allowed(int t) {
         if (t <= 0) return true;
-        for (int v : fanOpts) if (v == t) return true;
-        return false;
+        return fanMin > 0 && t >= fanMin && t <= fanMax;
     }
 
-    /** lo — для яркости 1–3, mid — 4–6, hi — 7–10; t > 0 — своя (только из списка модели), ≤ 0 — как в прошивке. Возвращает "ok" или текст ошибки. */
-    public String setFanTargets(int lo, int mid, int hi) {
+    /** lo — для яркости 1–3, mid — 4–6, hi — 7–8, top — 9–10; t > 0 — своя (целое в диапазоне модели), ≤ 0 — как в прошивке. Возвращает "ok" или текст ошибки. */
+    public String setFanTargets(int lo, int mid, int hi, int top) {
         try {
             limits();
             loadFanPrefs();
             if (!fanCtlModel(model()) || fanAuto <= 0) return "unsupported";
-            if (!allowed(lo) || !allowed(mid) || !allowed(hi)) return "bad_value";
+            if (!allowed(lo) || !allowed(mid) || !allowed(hi) || !allowed(top)) return "bad_value";
             fanLo = lo > 0 ? lo : null;
             fanMid = mid > 0 ? mid : null;
             fanHi = hi > 0 ? hi : null;
+            fanTop = top > 0 ? top : null;
             prefs().edit().putInt("fan_lo", Math.max(0, lo)).putInt("fan_mid", Math.max(0, mid)).putInt("fan_hi", Math.max(0, hi))
-                    .putBoolean("fan_v3", true).putInt("fan_bootid", bootId()).apply();
+                    .putInt("fan_top", Math.max(0, top)).putBoolean("fan_v3", true).putBoolean("fan_v4", true).putInt("fan_bootid", bootId()).apply();
             applyFanTarget(latest, null, true);
             synchronized (this) { notifyAll(); }
             return "ok";
@@ -408,18 +421,26 @@ public final class Monitor {
 
     public boolean fanBoot() { loadFanPrefs(); return fanBoot; }
 
-    /** Какая ступень нужна сейчас: 0 — яркость 1–3, 1 — 4–6, 2 — 7–10. Фиксированные яркие режимы и неизвестная яркость — «яркая». */
-    private static int tier(JSONObject s) {
-        int mode = s.optInt("brightness_mode", -1);
-        if (mode == 15 || mode == 16 || mode == 22 || mode == 23) return 2;
-        if (!s.has("brightness_menu")) return 2;
-        int lvl = s.optInt("brightness_menu", 10);
-        return lvl >= FAN_HI_LEVEL ? 2 : lvl >= FAN_MID_LEVEL ? 1 : 0;
+    /** Сколько ступеней показывать в окне: 1 — одна цель, 2 — 1–6 / 7–10, 3 — 1–3 / 4–6 / 7–10, 4 — 1–3 / 4–6 / 7–8 / 9–10.
+     *  Целей всегда четыре (lo/mid/hi/top): окно само пишет одинаковые значения в объединенные ступени. */
+    public void setFanTiers(int n) {
+        loadFanPrefs();
+        fanTiers = Math.max(1, Math.min(4, n));
+        prefs().edit().putInt("fan_tiers", fanTiers).apply();
     }
 
-    private Integer fanFor(int tier) { return tier == 2 ? fanHi : tier == 1 ? fanMid : fanLo; }
+    /** Какая ступень нужна сейчас: 0 — яркость 1–3, 1 — 4–6, 2 — 7–8, 3 — 9–10. Фиксированные яркие режимы и неизвестная яркость — самая яркая. */
+    private static int tier(JSONObject s) {
+        int mode = s.optInt("brightness_mode", -1);
+        if (mode == 15 || mode == 16 || mode == 22 || mode == 23) return 3;
+        if (!s.has("brightness_menu")) return 3;
+        int lvl = s.optInt("brightness_menu", 10);
+        return lvl >= FAN_TOP_LEVEL ? 3 : lvl >= FAN_HI_LEVEL ? 2 : lvl >= FAN_MID_LEVEL ? 1 : 0;
+    }
 
-    private static final String[] TIER_NAMES = {"lo", "mid", "hi"};
+    private Integer fanFor(int tier) { return tier == 3 ? fanTop : tier == 2 ? fanHi : tier == 1 ? fanMid : fanLo; }
+
+    private static final String[] TIER_NAMES = {"lo", "mid", "hi", "top"};
 
     /** Ставит нужную цель. Пишем, только когда нужная цель изменилась (ступень яркости, выбор в меню)
      *  или прошивка сбросила ее в −1 (после белого экрана). На белом экране приоритет у прошивки. */
@@ -430,7 +451,7 @@ public final class Monitor {
             if (fcNow == null) return null;
             Integer want = fanFor(tier(s));
             int w = want == null ? -1 : want;
-            boolean changed = fanApplied == null ? (want != null || fcNow > 0 && allowed(fcNow) && (fanLo != null || fanMid != null || fanHi != null))
+            boolean changed = fanApplied == null ? (want != null || fcNow > 0 && allowed(fcNow) && (fanLo != null || fanMid != null || fanHi != null || fanTop != null))
                     : fanApplied != w;
             if (want != null && (changed || fcNow == -1) && fcNow != w) { setInt(IDX_FAN_TARGET, w); fcNow = w; }
             // вернуть авто: только если сейчас стоит наша цель (не трогаем чужую и цель белого экрана)
@@ -477,7 +498,7 @@ public final class Monitor {
 
     /** Коды, у которых название известно точно: N5 — проверено на проекторах, остальные — Google Play / FCC. */
     private static final String[][] NAMES = {
-            {"K981CN", "JMGO N5 Pro"}, {"KD11CN", "JMGO N5S Ultra Max"}, {"KD11AX", "JMGO IRIS Ultra Max"},
+            {"K981CN", "JMGO N5 Pro / N5S Pro"}, {"K983CN", "JMGO N5S Pro Max"}, {"K931CN", "JMGO N5 Ultra Max"}, {"KD11CN", "JMGO N5S Ultra Max"}, {"KD11AX", "JMGO IRIS Ultra Max"},
             {"K931AO", "JMGO N3 Ultimate"}, {"S70A", "JMGO N1"}, {"H80A", "JMGO N1 Pro"},
             {"K92A", "JMGO N1S Infinity"}, {"K93A", "JMGO N1S Pro"}, {"K610AO", "JMGO N1S SE"},
             {"T91A", "JMGO O2S Ultra"}, {"m7642_JmGO_H79P", "JMGO O1"}, {"m7642_JmGO_T72A", "JMGO O1 Pro"}};
@@ -487,6 +508,9 @@ public final class Monitor {
         if (!sale.isEmpty()) return sale.toUpperCase(Locale.ROOT).startsWith("JMGO") ? sale : "JMGO " + sale;
         for (String c : new String[]{model, Build.MODEL, Build.DEVICE})
             for (String[] n : NAMES) if (n[0].equalsIgnoreCase(c)) return n[1];
+        // китайская прошивка сама задает торговое имя (jmgo_cus_device.sh / build.prop): K941CN → «N5 Ultra», K951CN → «N5 Pro Max»
+        String alias = prop("ro.device.alias").trim();
+        if (!alias.isEmpty()) return alias.toUpperCase(Locale.ROOT).startsWith("JMGO") ? alias : "JMGO " + alias;
         return "JMGO " + model;
     }
 
@@ -560,6 +584,9 @@ public final class Monitor {
                         fanAuto = b;
                         fanOpts = new int[o.size()];
                         for (int i = 0; i < fanOpts.length; i++) fanOpts[i] = o.get(i);
+                        // с 1.6.1 — любой градус в границах этого списка (шаг 1 °C)
+                        fanMin = o.isEmpty() ? b : Math.min(o.get(0), b);
+                        fanMax = o.isEmpty() ? b : Math.max(o.get(o.size() - 1), b);
                     }
                 }
                 dmdMux = list(xml, "TEMPERATURE_DMD_CHANNEL_MUX");
@@ -754,6 +781,8 @@ public final class Monitor {
             JSONArray o = new JSONArray();
             for (int v : fanOpts) o.put(v);
             fc.put("opts", o);
+            fc.put("min", fanMin);
+            fc.put("max", fanMax);
         }
         Integer ov = getInt(IDX_OVERLAP_LEVEL);
         th.put("overlap_level", ov == null ? 0 : ov);
@@ -827,26 +856,34 @@ public final class Monitor {
         }
         if (!s.has("brightness_menu") && curLevel != null) { s.put("brightness_menu", curLevel); s.put("brightness_exact", false); }
         if (fc != null) {
-            // три цели: для яркости 1–3, 4–6 и 7–10 (ступень меню; с AL 2.0 меню стоит на 10 — «яркая»)
+            // четыре цели: для яркости 1–3, 4–6, 7–8 и 9–10 (ступень меню; с AL 2.0 меню стоит на 10 — самая яркая)
             loadFanPrefs();
-            Integer lo2 = nearestOpt(fanLo), mid2 = nearestOpt(fanMid), hi2 = nearestOpt(fanHi);
-            if (!java.util.Objects.equals(lo2, fanLo) || !java.util.Objects.equals(mid2, fanMid) || !java.util.Objects.equals(hi2, fanHi)) {
-                fanLo = lo2; fanMid = mid2; fanHi = hi2;
+            Integer lo2 = nearestOpt(fanLo), mid2 = nearestOpt(fanMid), hi2 = nearestOpt(fanHi), top2 = nearestOpt(fanTop);
+            if (!java.util.Objects.equals(lo2, fanLo) || !java.util.Objects.equals(mid2, fanMid) || !java.util.Objects.equals(hi2, fanHi)
+                    || !java.util.Objects.equals(top2, fanTop)) {
+                fanLo = lo2; fanMid = mid2; fanHi = hi2; fanTop = top2;
                 prefs().edit().putInt("fan_lo", lo2 == null ? 0 : lo2).putInt("fan_mid", mid2 == null ? 0 : mid2)
-                        .putInt("fan_hi", hi2 == null ? 0 : hi2).apply();
+                        .putInt("fan_hi", hi2 == null ? 0 : hi2).putInt("fan_top", top2 == null ? 0 : top2).apply();
             }
-            if (fanLo != null || fanMid != null || fanHi != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
+            if (fanLo != null || fanMid != null || fanHi != null || fanTop != null || fanApplied != null) fcNow = applyFanTarget(s, fcNow, false);
             int tr = tier(s);
             Integer want = fanFor(tr);
             fc.put("now", fcNow == null ? -1 : fcNow);
             fc.put("lo", fanLo == null ? 0 : fanLo);
             fc.put("mid", fanMid == null ? 0 : fanMid);
             fc.put("hi", fanHi == null ? 0 : fanHi);
+            fc.put("top", fanTop == null ? 0 : fanTop);
             fc.put("use", TIER_NAMES[tr]);
             fc.put("boot", fanBoot);
-            fc.put("level", FAN_HI_LEVEL);
-            fc.put("level_mid", FAN_MID_LEVEL);
+            fc.put("tiers", fanTiers);
             if (want != null) fc.put("custom", want);
+            // своя цель не достигается: вентиляторы почти на максимуме, а лазеры заметно теплее цели дольше 3 мин
+            int dmax = -1;
+            JSONArray du = th.optJSONArray("fan_duty");
+            if (du != null) for (int i = 0; i < du.length(); i++) dmax = Math.max(dmax, du.optInt(i));
+            boolean miss = want != null && fcNow != null && fcNow.intValue() == want && dmax >= 95 && lmax != null && lmax > want + 1;
+            if (!miss) unreachSince = 0; else if (unreachSince == 0) unreachSince = now();
+            if (miss && now() - unreachSince >= 180) fc.put("unreach", true);
             s.put("fan_ctl", fc);
         }
         // AL 2.0 / Dynamic Black: флаг, который пишет сама прошивка; мощность лазеров меняется по сцене — показываем ступень по току

@@ -128,9 +128,9 @@ public class MainActivity extends Activity {
             if (any || monitor.hasFanTarget()) startForegroundService(s); else stopService(s);
         }
 
-        /** Цели температуры для вентиляторов: lo — яркость 1–3, mid — 4–6, hi — 7–10; t > 0 — своя, 0 — как в прошивке. */
-        @JavascriptInterface public String setFanTargets(int lo, int mid, int hi) {
-            String r = monitor.setFanTargets(lo, mid, hi);
+        /** Цели температуры для вентиляторов: lo — яркость 1–3, mid — 4–6, hi — 7–8, top — 9–10; t > 0 — своя, 0 — как в прошивке. */
+        @JavascriptInterface public String setFanTargets(int lo, int mid, int hi, int top) {
+            String r = monitor.setFanTargets(lo, mid, hi, top);
             Intent s = new Intent(MainActivity.this, WatchService.class);
             if (monitor.hasFanTarget()) startForegroundService(s);
             else if (!prefs().getBoolean("watch", true)) stopService(s);
@@ -139,6 +139,9 @@ public class MainActivity extends Activity {
 
         /** «Применять после включения проектора»: после загрузки приложение само запускается в фоне и ставит выбранные цели. */
         @JavascriptInterface public void setFanBoot(boolean on) { monitor.setFanBoot(on); }
+
+        /** Число ступеней яркости в окне «Изменить °C»: 1–4. */
+        @JavascriptInterface public void setFanTiers(int n) { monitor.setFanTiers(n); }
 
         @JavascriptInterface public void testWarn() {
             startForegroundService(new Intent(MainActivity.this, WatchService.class).setAction("test"));
@@ -160,6 +163,23 @@ public class MainActivity extends Activity {
             String c = corner(); int k = 0;
             for (int j = 0; j < order.length; j++) if (order[j].equals(c)) k = j;
             prefs().edit().putString("corner", order[(k + 1) % order.length]).apply();
+            if (OverlayService.running) startForegroundService(new Intent(MainActivity.this, OverlayService.class).setAction("reposition"));
+        }
+
+        /** Настройки компактного режима (с 1.6.1): {items:"dmd,las,…", size: sp, bg: %, corner}. */
+        @JavascriptInterface public String ovPrefs() {
+            try {
+                return new org.json.JSONObject().put("items", prefs().getString("ov_items", OverlayService.DEF_ITEMS))
+                        .put("size", prefs().getInt("ov_size", 10)).put("bg", prefs().getInt("ov_bg", 80))
+                        .put("corner", corner()).toString();
+            } catch (Exception e) { return "{}"; }
+        }
+
+        @JavascriptInterface public void setOvPrefs(String items, int size, int bg, String corner) {
+            if (!items.matches("[a-z,]{1,80}")) items = OverlayService.DEF_ITEMS;
+            if (!corner.matches("tr|br|bl|tl")) corner = "tr";
+            prefs().edit().putString("ov_items", items).putInt("ov_size", Math.max(8, Math.min(12, size)))
+                    .putInt("ov_bg", Math.max(0, Math.min(100, bg))).putString("corner", corner).apply();
             if (OverlayService.running) startForegroundService(new Intent(MainActivity.this, OverlayService.class).setAction("reposition"));
         }
     }

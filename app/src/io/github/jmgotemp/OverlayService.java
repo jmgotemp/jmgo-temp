@@ -30,8 +30,8 @@ import java.util.regex.Pattern;
 
 /**
  * Компактный режим: маленькое окно поверх фильма. Не перехватывает пульт и касания.
- * Строка 1: DMD и самый горячий лазер (цвет = запас до порога защиты).
- * Строка 2: мощность вентиляторов и уровень яркости.
+ * Строка 1: DMD, самый горячий лазер, процессор (цвет = запас до порога защиты).
+ * Строка 2: вентиляторы и яркость. Строка 3: HDMI. Что показывать, размер и фон — в настройках (с 1.6.1).
  */
 final class BuildInfo {
     static String version(android.content.Context c) {
@@ -70,15 +70,9 @@ public class OverlayService extends Service implements Monitor.Listener {
         view = new TextView(this);
         view.setTextColor(Color.WHITE);
         view.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        int p = dp(8);
-        view.setPadding(dp(12), p, dp(12), p);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xE6101216);
-        bg.setCornerRadius(dp(10));
-        view.setBackground(bg);
+        applyStyle();
         view.setText("JMGO Temp…");
-        wm.addView(view, params());
+        wm.addView(view, lp = params());
         if (hidden) view.setVisibility(android.view.View.GONE);
         self = this;
         running = true;
@@ -91,7 +85,9 @@ public class OverlayService extends Service implements Monitor.Listener {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && "reposition".equals(intent.getAction()) && view != null) {
             minW = minH = 0; view.setMinWidth(0); view.setMinHeight(0);
-            wm.updateViewLayout(view, params());
+            applyStyle();
+            if (monitor != null && monitor.latest() != null) view.setText(format(monitor.latest()));
+            wm.updateViewLayout(view, lp = params());
         }
         return START_STICKY;
     }
@@ -106,6 +102,25 @@ public class OverlayService extends Service implements Monitor.Listener {
     }
 
     private int minW, minH;
+    private WindowManager.LayoutParams lp;
+
+    static final String DEF_ITEMS = "dmd,las,cpu,fan,br,hdmi";
+
+    private android.content.SharedPreferences prefs() { return getSharedPreferences("overlay", MODE_PRIVATE); }
+
+    /** Размер текста (sp) и прозрачность фона (%) из настроек. */
+    private void applyStyle() {
+        int sp = Math.max(8, Math.min(12, prefs().getInt("ov_size", 10))), bgPct = Math.max(0, Math.min(100, prefs().getInt("ov_bg", 80)));
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        int p = Math.round(dp(8) * sp / 15f), ph = Math.round(dp(12) * sp / 15f);
+        view.setPadding(ph, p, ph, p);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor((Math.round(bgPct * 2.55f) << 24) | 0x101216);
+        bg.setCornerRadius(dp(10));
+        view.setBackground(bg);
+        // без фона текст читается поверх светлой картинки только с тенью
+        if (bgPct == 0) view.setShadowLayer(dp(2), 0, 0, 0xFF000000); else view.setShadowLayer(0, 0, 0, 0);
+    }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
@@ -143,8 +158,11 @@ public class OverlayService extends Service implements Monitor.Listener {
             view.setText(text);
             // окно только растет: если строка стала короче (пропала пометка, другое число), размер не меняется
             view.measure(android.view.View.MeasureSpec.UNSPECIFIED, android.view.View.MeasureSpec.UNSPECIFIED);
-            if (view.getMeasuredWidth() > minW) { minW = view.getMeasuredWidth(); view.setMinWidth(minW); }
+            boolean grow = false;
+            if (view.getMeasuredWidth() > minW) { minW = view.getMeasuredWidth(); view.setMinWidth(minW); grow = true; }
             if (view.getMeasuredHeight() > minH) { minH = view.getMeasuredHeight(); view.setMinHeight(minH); }
+            // WRAP_CONTENT окно система сначала меряет «шириной диалога» (~880 px), и длинная строка переносится: ширину задаем сами
+            if (grow && lp != null) { lp.width = minW; try { wm.updateViewLayout(view, lp); } catch (Exception ignored) {} }
         });
     }
 
@@ -161,57 +179,79 @@ public class OverlayService extends Service implements Monitor.Listener {
         JSONObject th = d.optJSONObject("thermal");
         JSONObject lim = d.optJSONObject("limits");
         if (th == null || lim == null) { add(sb, "JMGO Temp…", Color.WHITE); return sb; }
+        java.util.Set<String> it = new java.util.HashSet<>(java.util.Arrays.asList(prefs().getString("ov_items", DEF_ITEMS).split(",")));
         Double dmd = th.isNull("dmd") ? null : th.optDouble("dmd");
         Double lm = th.isNull("laser_max") ? null : th.optDouble("laser_max");
         int grey = 0xFFA3AAB6;
-        add(sb, "DMD ", grey);
-        add(sb, dmd == null ? "—" : String.format(Locale.US, "%.1f°", dmd), colorFor(dmd, lim.optDouble("dmd_shutdown", Double.NaN)));
-        add(sb, ru ? "  Лазер " : "  Laser ", grey);
-        add(sb, lm == null ? "—" : String.format(Locale.US, "%.1f°", lm), colorFor(lm, lim.optDouble("laser_derate", Double.NaN)));
-        // процессор: температура, при троттлинге — предупреждение (загрузка только на дашборде)
-        if (d.has("temp")) {
-            int cpu = d.optInt("temp");
-            add(sb, "  CPU ", grey);
-            add(sb, cpu + "°", cpu >= 100 ? 0xFFF16B68 : cpu >= 90 ? 0xFFF2BD55 : 0xFF7BE495);
-            if (d.optBoolean("throttled", false)) add(sb, (ru ? " ⚠ троттлинг " : " ⚠ throttling ") + d.optInt("freq_cap") + (ru ? " МГц" : " MHz"), 0xFFF16B68);
+        // строка 1: температуры; троттлинг показываем всегда, даже если процессор не выбран
+        SpannableStringBuilder l1 = new SpannableStringBuilder();
+        if (it.contains("dmd")) {
+            add(l1, "DMD ", grey);
+            add(l1, dmd == null ? "—" : String.format(Locale.US, "%.1f°", dmd), colorFor(dmd, lim.optDouble("dmd_shutdown", Double.NaN)));
         }
-        sb.append("\n");
-        JSONArray duty = th.optJSONArray("fan_duty");
-        int fan = -1;
-        if (duty != null) for (int i = 0; i < duty.length(); i++) fan = Math.max(fan, duty.optInt(i));
-        int rpm = Math.max(d.optInt("fan1", -1), d.optInt("fan2", -1));
-        add(sb, ru ? "Вент " : "Fans ", grey);
-        add(sb, rpm > 0 ? rpm + (ru ? " об/мин" : " rpm") : "—", Color.WHITE);
-        if (fan >= 0) add(sb, " (" + fan + "%)", grey);
-        int mode = d.optInt("brightness_mode", -1);
-        boolean fixed = mode == 15 || mode == 16 || mode == 22 || mode == 23;
-        add(sb, ru ? "  Яркость " : "  Brightness ", grey);
-        if (fixed) add(sb, ru ? "макс." : "max", Color.WHITE);
-        else if (d.has("brightness_menu")) {
-            add(sb, (d.optBoolean("brightness_exact", true) ? "" : "≈") + d.optInt("brightness_menu") + "/10", Color.WHITE);
-            if (d.has("brightness_actual")) add(sb, " (AL ≈" + d.optInt("brightness_actual") + ")", 0xFF72AAFF);
+        if (it.contains("las")) {
+            add(l1, (l1.length() > 0 ? "  " : "") + (ru ? "Лазер " : "Laser "), grey);
+            add(l1, lm == null ? "—" : String.format(Locale.US, "%.1f°", lm), colorFor(lm, lim.optDouble("laser_derate", Double.NaN)));
         }
-        else add(sb, "—", Color.WHITE);
-        if (d.has("aperture")) {
-            double a = d.optDouble("aperture");
-            add(sb, "  F" + (a == Math.floor(a) ? String.valueOf((int) a) : String.format(Locale.US, "%.1f", a)), Color.WHITE);
+        boolean cT = it.contains("cpu") && d.has("temp"), cL = it.contains("load") && d.optInt("cpu_usage", -1) >= 0, cF = it.contains("freq") && d.optInt("freq", 0) > 0;
+        if (cT || cL || cF) {
+            add(l1, (l1.length() > 0 ? "  " : "") + "CPU", grey);
+            if (cT) { int cpu = d.optInt("temp"); add(l1, " " + cpu + "°", cpu >= 100 ? 0xFFF16B68 : cpu >= 90 ? 0xFFF2BD55 : 0xFF7BE495); }
+            // числа дополняем пробелами до постоянной ширины (шрифт моноширинный), чтобы текст справа не прыгал
+            if (cL) add(l1, String.format(Locale.US, " %2d%%", d.optInt("cpu_usage")), Color.WHITE);
+            if (cF) { add(l1, " " + d.optInt("freq"), Color.WHITE); add(l1, ru ? " МГц" : " MHz", grey); }
         }
-        sb.append("\n");
+        if (d.optBoolean("throttled", false)) add(l1, (l1.length() > 0 ? " " : "") + (ru ? "⚠ троттлинг " : "⚠ throttling ") + d.optInt("freq_cap") + (ru ? " МГц" : " MHz"), 0xFFF16B68);
+        // строка 2: вентиляторы и яркость
+        SpannableStringBuilder l2 = new SpannableStringBuilder();
+        if (it.contains("fan")) {
+            JSONArray duty = th.optJSONArray("fan_duty");
+            int fan = -1;
+            if (duty != null) for (int i = 0; i < duty.length(); i++) fan = Math.max(fan, duty.optInt(i));
+            int rpm = Math.max(d.optInt("fan1", -1), d.optInt("fan2", -1));
+            add(l2, ru ? "Вент " : "Fans ", grey);
+            add(l2, rpm > 0 ? String.format(Locale.US, "%4d", rpm) + (ru ? " об/мин" : " rpm") : "—", Color.WHITE);
+            if (fan >= 0) add(l2, String.format(Locale.US, " (%2d%%)", fan), grey);
+        }
+        if (it.contains("br")) {
+            int mode = d.optInt("brightness_mode", -1);
+            boolean fixed = mode == 15 || mode == 16 || mode == 22 || mode == 23;
+            add(l2, (l2.length() > 0 ? "  " : "") + (ru ? "Яркость " : "Brightness "), grey);
+            if (fixed) add(l2, ru ? "макс." : "max", Color.WHITE);
+            else if (d.has("brightness_menu")) {
+                add(l2, (d.optBoolean("brightness_exact", true) ? "" : "≈") + d.optInt("brightness_menu") + "/10", Color.WHITE);
+                if (d.has("brightness_actual")) add(l2, " (AL ≈" + d.optInt("brightness_actual") + ")", 0xFF72AAFF);
+            }
+            else add(l2, "—", Color.WHITE);
+            if (d.has("aperture")) {
+                double a = d.optDouble("aperture");
+                add(l2, "  F" + (a == Math.floor(a) ? String.valueOf((int) a) : String.format(Locale.US, "%.1f", a)), Color.WHITE);
+            }
+        }
+        // строка 3: входной сигнал
+        SpannableStringBuilder l3 = new SpannableStringBuilder();
         String rs = d.optString("input_rslt", "");
-        if (!rs.isEmpty() && !"null".equals(rs)) {
-            add(sb, "HDMI ", grey);
+        boolean hd = it.contains("hdmi");
+        if (hd && !rs.isEmpty() && !"null".equals(rs)) {
+            add(l3, "HDMI ", grey);
             Matcher m = Pattern.compile("(\\d+)\\s*[xX×]\\s*(\\d+)(?:[^@\\d]*)?(?:@\\s*([\\d.]+))?").matcher(rs);
             String txt;
             if (m.find()) {
                 String hz = m.group(3) != null ? m.group(3) : (d.has("input_fps") ? String.valueOf(d.optInt("input_fps")) : null);
                 txt = shortRes(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))) + (hz != null ? " " + roundHz(hz) + (ru ? " Гц" : " Hz") : "");
             } else txt = rs;
-            add(sb, txt, Color.WHITE);
-            if (d.optInt("input_vrr", 0) > 0) add(sb, " VRR", 0xFF72AAFF);
-        } else if (d.has("output_width")) {
-            add(sb, ru ? "Вывод " : "Output ", grey);
-            add(sb, shortRes(d.optInt("output_width"), d.optInt("output_height")) + " " + d.optInt("output_hz") + (ru ? " Гц" : " Hz"), Color.WHITE);
+            add(l3, txt, Color.WHITE);
+            if (d.optInt("input_vrr", 0) > 0) add(l3, " VRR", 0xFF72AAFF);
+        } else if (hd && d.has("output_width")) {
+            add(l3, ru ? "Вывод " : "Output ", grey);
+            add(l3, shortRes(d.optInt("output_width"), d.optInt("output_height")) + " " + d.optInt("output_hz") + (ru ? " Гц" : " Hz"), Color.WHITE);
         }
+        for (SpannableStringBuilder l : new SpannableStringBuilder[]{l1, l2, l3}) {
+            if (l.length() == 0) continue;
+            if (sb.length() > 0) sb.append("\n");
+            sb.append(l);
+        }
+        if (sb.length() == 0) add(sb, "JMGO Temp", grey);
         return sb;
     }
 
